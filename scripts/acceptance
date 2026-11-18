@@ -7,11 +7,14 @@ STORAGE="$(pwd)/data"
 SYSTEM=first-contact
 KEY=hello-from-haskell
 cabal build --offline --build-summary=.cache/cabal-build.log all
+cabal test --offline --build-summary=.cache/cabal-build.log connector-tests --test-show-details=direct
 BIN=$(cabal list-bin first-contact)
+TEST_BIN=$(cabal list-bin connector-tests)
 scripts/bridge bootstrap "$STORAGE" "$SYSTEM" "$DATABASE"
 "$BIN" write "$STORAGE" "$SYSTEM" "$DATABASE" "$KEY"
 # The prior Haskell and JVM processes have both exited before this new pair starts.
 "$BIN" read "$STORAGE" "$SYSTEM" "$DATABASE" "$KEY"
+"$TEST_BIN" --scalars scripts/bridge "$STORAGE" "$SYSTEM" "$DATABASE"
 python3 experiment/refusal.py "$STORAGE" "$SYSTEM" "$DATABASE"
 LOG=$(mktemp)
 trap 'rm -f "$LOG"' EXIT

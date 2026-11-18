@@ -7,8 +7,11 @@
 
 (defn read-edn [s]
   (with-open [r (java.io.PushbackReader. (java.io.StringReader. s))]
-    (let [v (edn/read {:eof ::eof} r)]
-      (when (or (= v ::eof) (not= ::eof (edn/read {:eof ::eof} r)))
+    (let [options {:eof ::eof
+                   :readers {'connector/uri #(java.net.URI. %)
+                             'connector/bytes #(.decode (java.util.Base64/getDecoder) ^String %)}}
+          v (edn/read options r)]
+      (when (or (= v ::eof) (not= ::eof (edn/read options r)))
         (throw (ex-info "Expected exactly one EDN value" {})))
       v)))
 
@@ -56,7 +59,15 @@
 
 (defn emit [v]
   (binding [*print-length* nil *print-level* nil *print-namespace-maps* false]
-    (prn v) (flush)))
+    ;; URI and byte[] do not have readable EDN representations in Clojure.
+    (prn (walk/postwalk
+           (fn [x]
+             (cond
+               (instance? java.math.BigInteger x) (bigint x)
+               (instance? java.net.URI x) (tagged-literal 'connector/uri (str x))
+               (bytes? x) (tagged-literal 'connector/bytes (.encodeToString (java.util.Base64/getEncoder) x))
+               :else x)) v))
+    (flush)))
 
 (defn bootstrap [client db-name]
   (d/create-database client {:db-name db-name})

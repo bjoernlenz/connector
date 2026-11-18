@@ -63,25 +63,30 @@ pull c selector eid = request c [("op", Keyword "pull"), ("selector", selector),
 
 -- Private: callers cannot send arbitrary protocol operations or omit context.
 request :: Connector -> [(String, EDN)] -> IO EDN
-request (Connector input output process lock) entries = mask $ \restore -> do
-  outcome <- modifyMVar lock $ \healthy ->
-    if not healthy then pure (False, Left (toException (userError "Connector is closed after an interrupted or failed exchange; transaction outcome may be unknown")))
-    else do
-      result <- tryAny $ restore $ do
-        hPutStrLn input (renderEDN (Map [(Keyword k,v) | (k,v) <- entries]))
-        line <- hGetLine output
-        response <- either (throwIO . userError) pure (parseEDN line)
-        case field "ok" response of
-          Just (Boolean True) -> maybe (throwIO (userError "Bridge response lacks result")) (pure . Right) (field "result" response)
-          Just (Boolean False) | Just err <- field "error" response -> pure (Left (userError ("Datomic bridge: " ++ renderEDN err)))
-          _ -> throwIO (userError "Malformed bridge response")
-      case result of
-        Right response -> pure (True, Right response)
-        Left exception -> do
-          ignoreIO (terminateProcess process)
-          -- Commit the closed state before rethrowing, including async exceptions.
-          pure (False, Left exception)
-  either throwIO (either throwIO pure) outcome
+request (Connector input output process lock) entries = do
+  -- Validate the entire value before writing even one byte to the stream.
+  encoded <- either (throwIO . userError) pure (encodeEDN (Map [(Keyword k,v) | (k,v) <- entries]))
+  exchange encoded
+ where
+  exchange encoded = mask $ \restore -> do
+    outcome <- modifyMVar lock $ \healthy ->
+      if not healthy then pure (False, Left (toException (userError "Connector is closed after an interrupted or failed exchange; transaction outcome may be unknown")))
+      else do
+        result <- tryAny $ restore $ do
+          hPutStrLn input encoded
+          line <- hGetLine output
+          response <- either (throwIO . userError) pure (parseEDN line)
+          case field "ok" response of
+            Just (Boolean True) -> maybe (throwIO (userError "Bridge response lacks result")) (pure . Right) (field "result" response)
+            Just (Boolean False) | Just err <- field "error" response -> pure (Left (userError ("Datomic bridge: " ++ renderEDN err)))
+            _ -> throwIO (userError "Malformed bridge response")
+        case result of
+          Right response -> pure (True, Right response)
+          Left exception -> do
+            ignoreIO (terminateProcess process)
+            -- Commit the closed state before rethrowing, including async exceptions.
+            pure (False, Left exception)
+    either throwIO (either throwIO pure) outcome
 
 tryAny :: IO a -> IO (Either SomeException a)
 tryAny = try

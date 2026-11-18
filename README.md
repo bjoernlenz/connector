@@ -84,10 +84,20 @@ unattributed transaction function in the Haskell API or serving protocol.
   subsequent calls fail instead of consuming an abandoned response. A write whose
   response was lost may already have committed: reconnect and reconcile its outcome
   before retrying. A complete Datomic error response leaves the connector usable.
-- EDN support is intentionally limited to nil, booleans, integers, strings,
-  keywords, symbols, maps, lists, vectors, sets and tagged values such as `#inst`.
-  Floats, decimals, ratios, characters and namespaced-map syntax need further work.
-  The JVM prints expanded maps so normal Datomic responses fit this subset.
+- EDN supports nil, booleans, signed 64-bit integers (`IntEDN`), arbitrary integers
+  (`BigIntEDN`, `N` suffix), doubles (`FloatEDN`, including `##NaN`/`##Inf`/`##-Inf`),
+  exact decimals (`DecimalEDN coefficient exponent`, value = coefficient × 10^exponent),
+  strings, keywords, symbols, maps, lists, vectors, sets and tagged values.
+  Decimal scale is preserved. Instants and UUIDs use `Tagged "inst"`/`Tagged "uuid"`
+  with a `StringEDN`. URIs use `Tagged "connector/uri" (StringEDN uri)`;
+  binary wire values use `Tagged "connector/bytes" (StringEDN base64)`. Datomic
+  Local 1.0.301 does not provide a `:db.type/bytes` attribute type.
+  Ratios, characters and namespaced-map syntax are deliberately unsupported;
+  signed unsupported numbers fail parsing instead of becoming symbols. The JVM
+  prints expanded maps. `encodeEDN` returns `Either String String` and validates
+  outgoing values before any protocol bytes are written; `renderEDN` is the
+  partial convenience function for known-valid literals. Invalid JVM tags return
+  an ordinary bridge error. Unicode escape pairs decode to one character.
   Pulling an absent lookup reference returned `{:db/id nil}`, rather than an error.
 - Ordinary transactions support entity maps and native add/retract/cas/retractEntity
   operations. User transaction functions are excluded in this experiment.

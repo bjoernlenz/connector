@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+ROOT=$(pwd)
+if [ -d "$ROOT/.tools/jdk" ]; then
+  export JAVA_HOME="$ROOT/.tools/jdk"
+fi
+export CLJ_CONFIG="$ROOT/.cache/clojure"
+mkdir -p "$CLJ_CONFIG"
+if [ -f "$ROOT/.cache/bridge-classpath" ]; then
+  JAVA=java
+  if [ -n "${JAVA_HOME:-}" ]; then JAVA="$JAVA_HOME/bin/java"; fi
+  exec "$JAVA" -cp "$(cat "$ROOT/.cache/bridge-classpath")" clojure.main -m connector.main "$@"
+fi
+if [ -x "$ROOT/.tools/clojure/clojure" ]; then
+  CLOJURE="$ROOT/.tools/clojure/clojure"
+else
+  CLOJURE=clojure
+fi
+exec "$CLOJURE" -M -m connector.main "$@"

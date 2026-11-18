@@ -1,0 +1,102 @@
+# Haskell ↔ Datomic: first contact
+
+A small Haskell library starts a Clojure/JVM subprocess, exchanges newline-delimited
+EDN over stdin/stdout, and uses the synchronous Datomic Client API. Datomic Local
+stores the database on disk. No server, Scotty dependency or application schema
+exists in the connector.
+
+Verified on Intel macOS on 2026-10-14: `scripts/acceptance` exited successfully.
+The retained database is `data/first-contact/acceptance-20261014-183912-19764`;
+transaction `13194139533321`, timestamp `2026-10-14T16:39:30.814-00:00`, actor
+`79164837199951` and via `79164837199952` matched before and after process restart.
+
+## Setup and run (native macOS)
+
+Install GHC 9.6.7 and Cabal (for example with [GHCup](https://www.haskell.org/ghcup/)).
+Then, from this checkout:
+
+```sh
+scripts/install-local          # workspace-local Java 21 and Clojure CLI
+cabal build --build-summary=.cache/cabal-build.log all
+scripts/acceptance
+```
+
+The installer supports Intel and Apple Silicon. Alternatively provide Java 21
+and `clojure` on your PATH. `deps.edn` pins Clojure 1.12.4 and Datomic Local
+1.0.301; the CLI downloads Datomic and its dependencies on first use. Python 3
+and `rg` are used by the acceptance script. Acceptance uses `--offline` for the
+Haskell build, so run the preceding build first on a fresh machine.
+
+Each acceptance run creates a new durable database under
+`data/first-contact/acceptance-*`. It installs the schema and identities, writes
+and reads from Haskell, checks the transaction references and timestamp, exits
+both processes, and starts another Haskell/JVM pair to verify the same data.
+It also checks invalid/nonexistent identities, metadata overrides, protocol
+writes without context, unchanged transaction count after refusal, and a Haskell
+write without context that must fail to compile. Data is retained for inspection.
+
+To use one named database manually:
+
+```sh
+scripts/bridge bootstrap "$PWD/data" first-contact experiment
+cabal run --build-summary=.cache/cabal-build.log first-contact -- write "$PWD/data" first-contact experiment hello
+cabal run --build-summary=.cache/cabal-build.log first-contact -- read  "$PWD/data" first-contact experiment hello
+```
+
+## Interface and attribution
+
+The exposed library operations are:
+
+```haskell
+withConnector :: FilePath -> [String] -> (Connector -> IO a) -> IO a
+transact :: Connector -> WriteContext -> EDN -> IO EDN
+query    :: Connector -> EDN -> [EDN] -> IO EDN
+pull     :: Connector -> EDN -> EDN -> IO EDN
+
+data WriteContext = WriteContext { actor :: EntityId, via :: EntityId }
+```
+
+See `experiment/Main.hs` for a complete caller. The EDN values are Datomic
+transaction maps/vectors, Datalog queries, selectors and entity IDs/lookup refs.
+`query` supplies the current database as the first input (`$`); additional inputs
+are supplied by Haskell. Each call reads the current database, not a pinned
+snapshot. Transaction reports contain `:t`, `:tx`, `:tempids` and datom vectors
+`[e a v tx added]`; live JVM database objects stay inside the bridge.
+
+Haskell requires context at the type level. The bridge also checks that both
+positive numeric IDs exist before transacting, then adds `:write/actor` and
+`:write/via` to `"datomic.tx"`. Both attributes have type `:db.type/ref`.
+Datomic supplies `:db/txInstant`. The caller cannot supply these three attributes
+or the transaction tempid. Context identifies responsibility; it authenticates
+nobody and does not restrict actors to Björn.
+
+Bootstrap is a separate process mode with two fixed experiment files. It creates
+the attribution/test schema and the Björn/application entities. Bootstrap
+transactions have no actor/via; there is no bootstrap operation or arbitrary
+unattributed transaction function in the Haskell API or serving protocol.
+
+## Observed limits
+
+- One JVM owns a local database at a time. Calls on one Haskell connector are
+  serialized. Closing its scope closes stdin, releases Datomic and waits for exit.
+- EDN support is intentionally limited to nil, booleans, integers, strings,
+  keywords, symbols, maps, lists, vectors, sets and tagged values such as `#inst`.
+  Floats, decimals, ratios, characters and namespaced-map syntax need further work.
+  The JVM prints expanded maps so normal Datomic responses fit this subset.
+  Pulling an absent lookup reference returned `{:db/id nil}`, rather than an error.
+- Ordinary transactions support entity maps and native add/retract/cas/retractEntity
+  operations. User transaction functions are excluded in this experiment.
+- This is a trusted local connector, not a security boundary. Someone directly
+  accessing Datomic can bypass it. There are no timeouts, retries or crash recovery;
+  failed calls raise IO exceptions containing the bridge's EDN error response.
+- In this managed workspace Java's Maven downloads were blocked. The demonstrated
+  run used direct downloads of Datomic's flattened POM dependencies in
+  `.cache/runtime` and `.cache/bridge-classpath` containing
+  `.cache/runtime/*:bridge/src`. The launcher accepts a cached classpath; normal
+  machines use the Clojure CLI with `deps.edn`. Caches, tools and databases are
+  ignored by Git. Intel macOS was tested; Apple Silicon installation was not.
+
+[Datomic Local setup and durability](https://docs.datomic.com/datomic-local.html),
+[Client API](https://docs.datomic.com/client-api/datomic.client.api.html),
+[transaction entity metadata](https://docs.datomic.com/reference/best.html),
+[Clojure installation](https://clojure.org/guides/install_clojure).

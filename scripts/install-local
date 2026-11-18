@@ -1,0 +1,26 @@
+#!/bin/sh
+# Optional workspace-local macOS JDK/Clojure installation. Haskell is separate.
+set -eu
+cd "$(dirname "$0")/.."
+case "$(uname -s)/$(uname -m)" in
+  Darwin/x86_64) ARCH=x64 ;;
+  Darwin/arm64) ARCH=aarch64 ;;
+  *) echo 'This installer supports native macOS only.' >&2; exit 1 ;;
+esac
+mkdir -p .tools/downloads .tools/clojure/libexec
+JDK="zulu21.48.17-ca-jdk21.0.10-macosx_$ARCH"
+if [ ! -x .tools/jdk/bin/java ]; then
+  curl -fLsS "https://cdn.azul.com/zulu/bin/$JDK.tar.gz" -o .tools/downloads/jdk.tar.gz
+  tar -xzf .tools/downloads/jdk.tar.gz -C .tools
+  ln -s "$JDK" .tools/jdk
+fi
+if [ ! -x .tools/clojure/clojure ]; then
+  curl -fLsS https://download.clojure.org/install/clojure-tools-1.12.4.1582.tar.gz -o .tools/downloads/clojure.tar.gz
+  tar -xzf .tools/downloads/clojure.tar.gz -C .tools
+  cp .tools/clojure-tools/*.jar .tools/clojure/libexec/
+  cp .tools/clojure-tools/deps.edn .tools/clojure-tools/example-deps.edn .tools/clojure-tools/tools.edn .tools/clojure/
+  sed "s|PREFIX|$(pwd)/.tools/clojure|g" .tools/clojure-tools/clojure > .tools/clojure/clojure
+  chmod +x .tools/clojure/clojure
+fi
+.tools/jdk/bin/java -version
+.tools/clojure/clojure --version

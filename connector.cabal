@@ -1,0 +1,30 @@
+cabal-version: 3.0
+name: connector
+version: 0.1.0.0
+build-type: Simple
+synopsis: Small EDN bridge from Haskell to Datomic Local
+description: First-contact experiment with mandatory transaction attribution.
+extra-source-files:
+  README.md
+  deps.edn
+  bridge/src/connector/main.clj
+  experiment/*.edn
+  experiment/MissingContext.hs
+  experiment/refusal.py
+  scripts/bridge
+  scripts/install-local
+  scripts/acceptance
+
+library
+  exposed-modules: Datomic.Connector, Datomic.EDN
+  hs-source-dirs: src
+  build-depends: base >=4.18 && <5, parsec, process
+  default-language: Haskell2010
+  ghc-options: -Wall
+
+executable first-contact
+  main-is: Main.hs
+  hs-source-dirs: experiment
+  build-depends: base, connector
+  default-language: Haskell2010
+  ghc-options: -Wall -threaded

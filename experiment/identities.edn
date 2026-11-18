@@ -1,0 +1,2 @@
+[{:db/ident :identity/bjoern :identity/name "Björn"}
+ {:db/ident :identity/conversation-app :identity/name "Unnamed conversation application"}]

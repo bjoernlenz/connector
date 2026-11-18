@@ -79,6 +79,11 @@ unattributed transaction function in the Haskell API or serving protocol.
 
 - One JVM owns a local database at a time. Calls on one Haskell connector are
   serialized. Closing its scope closes stdin, releases Datomic and waits for exit.
+  Shutdown allows two seconds for graceful exit, then terminates the subprocess.
+  Cancellation, EOF or malformed responses permanently close that connector;
+  subsequent calls fail instead of consuming an abandoned response. A write whose
+  response was lost may already have committed: reconnect and reconcile its outcome
+  before retrying. A complete Datomic error response leaves the connector usable.
 - EDN support is intentionally limited to nil, booleans, integers, strings,
   keywords, symbols, maps, lists, vectors, sets and tagged values such as `#inst`.
   Floats, decimals, ratios, characters and namespaced-map syntax need further work.
@@ -87,7 +92,7 @@ unattributed transaction function in the Haskell API or serving protocol.
 - Ordinary transactions support entity maps and native add/retract/cas/retractEntity
   operations. User transaction functions are excluded in this experiment.
 - This is a trusted local connector, not a security boundary. Someone directly
-  accessing Datomic can bypass it. There are no timeouts, retries or crash recovery;
+  accessing Datomic can bypass it. There are no request timeouts, retries or crash recovery;
   failed calls raise IO exceptions containing the bridge's EDN error response.
 - In this managed workspace Java's Maven downloads were blocked. The demonstrated
   run used direct downloads of Datomic's flattened POM dependencies in

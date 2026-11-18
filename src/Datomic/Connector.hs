@@ -2,32 +2,50 @@ module Datomic.Connector
   (Connector, EntityId(..), WriteContext(..), withConnector, transact, query, pull) where
 
 import Control.Concurrent.MVar
-import Control.Exception (bracket, finally, throwIO)
+import Control.Exception (SomeException, IOException, mask, try, throwIO, catch, toException)
+import Control.Monad (void)
 import Datomic.EDN
 import System.Exit (ExitCode(..))
 import System.IO
 import System.Process
+import System.Timeout (timeout)
 
 newtype EntityId = EntityId Integer deriving (Eq, Show)
 data WriteContext = WriteContext { actor :: EntityId, via :: EntityId } deriving (Eq, Show)
-data Connector = Connector Handle Handle (MVar ())
+-- A failed exchange permanently closes the protocol: its reply may still arrive.
+data Connector = Connector Handle Handle ProcessHandle (MVar Bool)
 
 -- The command must launch the bridge in serve mode; stderr stays visible.
 withConnector :: FilePath -> [String] -> (Connector -> IO a) -> IO a
-withConnector command args action = bracket start stop (action . fst)
+withConnector command args action = mask $ \restore -> do
+  connector <- start
+  result <- tryAny (restore (action connector))
+  cleanup <- tryAny (stop connector)
+  -- Cleanup must not replace the original exception (including cancellation).
+  either throwIO (\value -> either throwIO (const (pure value)) cleanup) result
   where
     start = do
       (Just input, Just output, _, process) <- createProcess (proc command args)
         {std_in = CreatePipe, std_out = CreatePipe, std_err = Inherit}
-      mapM_ (\h -> hSetEncoding h utf8 >> hSetBuffering h LineBuffering) [input,output]
-      lock <- newMVar ()
-      pure (Connector input output lock, process)
-    stop (Connector input output _, process) = do
-      hClose input
-      code <- waitForProcess process `finally` hClose output
+      lock <- newMVar True
+      let connector = Connector input output process lock
+      setup <- tryAny (mapM_ (\h -> hSetEncoding h utf8 >> hSetBuffering h LineBuffering) [input,output])
+      either (\e -> stop connector >> throwIO e) (const (pure connector)) setup
+    stop (Connector input output process lock) = do
+      healthy <- modifyMVar lock (\open -> pure (False, open))
+      ignoreIO (hClose input)
+      code <- timeout 2000000 (waitForProcess process)
       case code of
-        ExitSuccess -> pure ()
-        _ -> throwIO (userError ("Bridge exited: " ++ show code))
+        Nothing -> do
+          ignoreIO (terminateProcess process)
+          void (timeout 2000000 (waitForProcess process))
+        _ -> pure ()
+      ignoreIO (hClose output)
+      case code of
+        Just ExitSuccess -> pure ()
+        Just exit | healthy -> throwIO (userError ("Bridge exited: " ++ show exit))
+        Nothing | healthy -> throwIO (userError "Bridge did not shut down within two seconds")
+        _ -> pure ()
 
 transact :: Connector -> WriteContext -> EDN -> IO EDN
 transact c (WriteContext (EntityId a) (EntityId v)) tx
@@ -45,10 +63,28 @@ pull c selector eid = request c [("op", Keyword "pull"), ("selector", selector),
 
 -- Private: callers cannot send arbitrary protocol operations or omit context.
 request :: Connector -> [(String, EDN)] -> IO EDN
-request (Connector input output lock) entries = withMVar lock $ \_ -> do
-  hPutStrLn input (renderEDN (Map [(Keyword k,v) | (k,v) <- entries]))
-  line <- hGetLine output
-  response <- either (throwIO . userError) pure (parseEDN line)
-  case field "ok" response of
-    Just (Boolean True) -> maybe (throwIO (userError "Bridge response lacks result")) pure (field "result" response)
-    _ -> throwIO (userError ("Datomic bridge: " ++ renderEDN response))
+request (Connector input output process lock) entries = mask $ \restore -> do
+  outcome <- modifyMVar lock $ \healthy ->
+    if not healthy then pure (False, Left (toException (userError "Connector is closed after an interrupted or failed exchange; transaction outcome may be unknown")))
+    else do
+      result <- tryAny $ restore $ do
+        hPutStrLn input (renderEDN (Map [(Keyword k,v) | (k,v) <- entries]))
+        line <- hGetLine output
+        response <- either (throwIO . userError) pure (parseEDN line)
+        case field "ok" response of
+          Just (Boolean True) -> maybe (throwIO (userError "Bridge response lacks result")) (pure . Right) (field "result" response)
+          Just (Boolean False) | Just err <- field "error" response -> pure (Left (userError ("Datomic bridge: " ++ renderEDN err)))
+          _ -> throwIO (userError "Malformed bridge response")
+      case result of
+        Right response -> pure (True, Right response)
+        Left exception -> do
+          ignoreIO (terminateProcess process)
+          -- Commit the closed state before rethrowing, including async exceptions.
+          pure (False, Left exception)
+  either throwIO (either throwIO pure) outcome
+
+tryAny :: IO a -> IO (Either SomeException a)
+tryAny = try
+
+ignoreIO :: IO () -> IO ()
+ignoreIO action = action `catch` (\e -> const (pure ()) (e :: IOException))

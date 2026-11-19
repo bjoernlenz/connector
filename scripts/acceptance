@@ -1,6 +1,13 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
+export connector_datadir="$(pwd)"
+if [ -d .tools/jdk ]; then export JAVA_HOME="$(pwd)/.tools/jdk"; fi
+if [ -f .cache/bridge-classpath ]; then
+  export DATOMIC_CONNECTOR_CLASSPATH="$(pwd)/.cache/runtime/*"
+elif [ -x .tools/clojure/clojure ]; then
+  export DATOMIC_CONNECTOR_CLOJURE="$(pwd)/.tools/clojure/clojure"
+fi
 # Every run has its own durable database; retain it for manual inspection.
 DATABASE="acceptance-$(date +%Y%m%d-%H%M%S)-$$"
 STORAGE="$(pwd)/data"
@@ -15,10 +22,11 @@ scripts/bridge bootstrap "$STORAGE" "$SYSTEM" "$DATABASE"
 # The prior Haskell and JVM processes have both exited before this new pair starts.
 "$BIN" read "$STORAGE" "$SYSTEM" "$DATABASE" "$KEY"
 "$TEST_BIN" --scalars scripts/bridge "$STORAGE" "$SYSTEM" "$DATABASE"
+python3 test/runtime.py "$STORAGE" "$SYSTEM" "$DATABASE"
 python3 experiment/refusal.py "$STORAGE" "$SYSTEM" "$DATABASE"
 LOG=$(mktemp)
 trap 'rm -f "$LOG"' EXIT
-if ghc -fno-code -isrc experiment/MissingContext.hs > "$LOG" 2>&1; then
+if cabal exec -- ghc -fno-code -package connector experiment/MissingContext.hs > "$LOG" 2>&1; then
   echo 'FAIL: anonymous Haskell write compiled' >&2; exit 1
 fi
 if ! rg -q WriteContext "$LOG"; then cat "$LOG"; exit 1; fi

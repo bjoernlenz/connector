@@ -49,12 +49,54 @@ The exposed library operations are:
 
 ```haskell
 withConnector :: FilePath -> [String] -> (Connector -> IO a) -> IO a
+withLocalConnector :: LocalConfig -> (Connector -> IO a) -> IO a
 transact :: Connector -> WriteContext -> EDN -> IO EDN
 query    :: Connector -> EDN -> [EDN] -> IO EDN
 pull     :: Connector -> EDN -> EDN -> IO EDN
 
 data WriteContext = WriteContext { actor :: EntityId, via :: EntityId }
 ```
+
+For another project, add this package as a Cabal dependency and use the configured
+entry point; it discovers its matching bridge through Cabal's installed data files:
+
+```haskell
+import Datomic.Connector
+import Datomic.Runtime
+
+-- The database must already have been provisioned.
+withLocalConnector (defaultLocalConfig "/absolute/data" "my-system" "my-db") $ \c ->
+  query c queryEDN inputs
+```
+
+The default runtime is `ClojureCLI "clojure"`. It uses bundled dependency pins,
+ignores user Clojure configuration and runs in a writable cache directory, away
+from the consuming project's `deps.edn`. Prepare dependencies before offline use.
+For Java-only deployment set `bridgeRuntime = JavaClasspath "/path/to/java"
+"/absolute/runtime/lib/*"`. The package's own bridge source is prepended to that
+dependency classpath. Startup checks protocol and package versions, with a
+configurable `startupTimeoutMicros` (60 seconds by default).
+
+The `datomic-bridge` executable uses the same installed resources. Runtime selection
+comes from `DATOMIC_CONNECTOR_CLASSPATH` (dependency jars), `DATOMIC_CONNECTOR_JAVA`
+or `JAVA_HOME`, and `DATOMIC_CONNECTOR_CLOJURE`. The example executable also uses
+these settings. Library callers choose explicitly, or call
+`bridgeRuntimeFromEnvironment` to use that convention. `withConnector` remains the
+lower-level entry point for a custom launcher.
+
+Build a relocatable runtime directory before deployment:
+
+```sh
+scripts/package-runtime /tmp/connector-runtime
+# Alternatively: scripts/package-runtime DEST --classpath '/resolved/jars/*'
+# Move or copy the complete directory to the target machine, then:
+/opt/connector-runtime/run serve /absolute/data my-system my-db
+```
+
+The directory contains the bridge, resolved jars, version, pinned dependency
+declarations and SHA-256 checksums. It needs Java 21; it does not need a checkout,
+Clojure CLI or downloads at startup. The builder uses an explicit classpath, the
+environment, the development cache, or finally Clojure's dependency resolver.
 
 See `experiment/Main.hs` for a complete caller. The EDN values are Datomic
 transaction maps/vectors, Datalog queries, selectors and entity IDs/lookup refs.

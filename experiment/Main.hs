@@ -4,6 +4,7 @@ import Control.Exception (try, IOException)
 import Control.Monad (unless)
 import Datomic.Connector
 import Datomic.EDN
+import Datomic.Runtime (bridgeRuntimeFromEnvironment)
 import System.Environment (getArgs)
 
 edn :: String -> EDN
@@ -27,8 +28,9 @@ main :: IO ()
 main = do
   args <- getArgs
   case args of
-    [mode, storage, system, db, key] ->
-      withConnector "scripts/bridge" ["serve",storage,system,db] $ \c -> do
+    [mode, storage, system, db, key] -> do
+      runtime <- bridgeRuntimeFromEnvironment
+      withLocalConnector ((defaultLocalConfig storage system db) {bridgeRuntime = runtime}) $ \c -> do
         a <- identity c "identity/bjoern"
         v <- identity c "identity/conversation-app"
         case mode of

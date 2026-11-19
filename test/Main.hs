@@ -5,6 +5,8 @@ import Control.Exception (IOException, try)
 import Control.Monad (unless, forever)
 import Datomic.Connector
 import Datomic.EDN
+import Datomic.Runtime (BridgeRuntime(..))
+import Data.List (isSuffixOf)
 import System.Environment (getArgs, getExecutablePath)
 import System.IO (hFlush, stdout)
 import System.Timeout (timeout)
@@ -21,12 +23,17 @@ main :: IO ()
 main = do
   args <- getArgs
   case args of
+    ("-cp":classpath:_) | "mock-ready" `isSuffixOf` classpath -> mock "ready"
+    ("-cp":classpath:_) | "mock-mismatch" `isSuffixOf` classpath -> mock "mismatch"
+    ("-cp":classpath:_) | "mock-slow" `isSuffixOf` classpath -> mock "slow"
     ["--mock", mode] -> mock mode
     ["--scalars", bridge, storage, system, database] -> scalarTests bridge storage system database
     _ -> tests
 
 mock :: String -> IO ()
 mock mode = case mode of
+  "ready" -> getLine >> putStrLn "{:ok true :result {:protocol 1 :version \"0.1.0.0\"}}" >> hFlush stdout
+  "mismatch" -> getLine >> putStrLn "{:ok true :result {:protocol 999 :version \"0.0.0\"}}" >> hFlush stdout
   "slow" -> do
     _ <- getLine
     threadDelay 500000
@@ -52,6 +59,11 @@ tests :: IO ()
 tests = do
   ednTests
   exe <- getExecutablePath
+  let config mode = (defaultLocalConfig "." "test" "test") {bridgeRuntime = JavaClasspath exe mode}
+  entered <- withLocalConnector (config "mock-ready") (const (pure True))
+  check entered "Compatible bridge should enter caller scope"
+  refused (withLocalConnector (config "mock-mismatch") (const (error "Incompatible bridge entered caller scope")))
+  refused (withLocalConnector ((config "mock-slow") {startupTimeoutMicros = 100000}) (const (error "Timed-out bridge entered caller scope")))
   withConnector exe ["--mock", "slow"] $ \c -> do
     abandoned <- timeout 100000 (query c (Keyword "first") [])
     check (abandoned == Nothing) "First request should be cancelled"

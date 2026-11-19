@@ -14,11 +14,19 @@ extra-source-files:
   scripts/bridge
   scripts/install-local
   scripts/acceptance
+  scripts/package-runtime
+  test/runtime.py
+
+data-files:
+  deps.edn
+  bridge/src/connector/main.clj
 
 library
-  exposed-modules: Datomic.Connector, Datomic.EDN
+  exposed-modules: Datomic.Connector, Datomic.EDN, Datomic.Runtime
+  other-modules: Paths_connector
+  autogen-modules: Paths_connector
   hs-source-dirs: src
-  build-depends: base >=4.18 && <5, parsec, process
+  build-depends: base >=4.18 && <5, parsec, process, directory, filepath
   default-language: Haskell2010
   ghc-options: -Wall
 
@@ -26,6 +34,13 @@ executable first-contact
   main-is: Main.hs
   hs-source-dirs: experiment
   build-depends: base, connector
+  default-language: Haskell2010
+  ghc-options: -Wall -threaded
+
+executable datomic-bridge
+  main-is: Bridge.hs
+  hs-source-dirs: app
+  build-depends: base, connector, directory, process
   default-language: Haskell2010
   ghc-options: -Wall -threaded
 

@@ -1,13 +1,18 @@
 module Datomic.Connector
-  (Connector, EntityId(..), WriteContext(..), withConnector, transact, query, pull) where
+  (Connector, EntityId(..), WriteContext(..), withConnector,
+   LocalConfig(..), defaultLocalConfig, withLocalConnector, transact, query, pull) where
 
 import Control.Concurrent.MVar
 import Control.Exception (SomeException, IOException, mask, try, throwIO, catch, toException)
 import Control.Monad (void)
 import Datomic.EDN
+import Datomic.Runtime
+import Data.Version (showVersion)
+import Paths_connector (version)
+import System.Directory (makeAbsolute)
 import System.Exit (ExitCode(..))
 import System.IO
-import System.Process
+import System.Process hiding (system)
 import System.Timeout (timeout)
 
 newtype EntityId = EntityId Integer deriving (Eq, Show)
@@ -15,9 +20,36 @@ data WriteContext = WriteContext { actor :: EntityId, via :: EntityId } deriving
 -- A failed exchange permanently closes the protocol: its reply may still arrive.
 data Connector = Connector Handle Handle ProcessHandle (MVar Bool)
 
+data LocalConfig = LocalConfig
+  { storageDirectory :: FilePath
+  , systemName :: String
+  , databaseName :: String
+  , bridgeRuntime :: BridgeRuntime
+  , startupTimeoutMicros :: Int
+  } deriving (Eq, Show)
+
+defaultLocalConfig :: FilePath -> String -> String -> LocalConfig
+defaultLocalConfig storage system database = LocalConfig storage system database (ClojureCLI "clojure") 60000000
+
+-- Resource paths come from Cabal, not the caller's working directory.
+withLocalConnector :: LocalConfig -> (Connector -> IO a) -> IO a
+withLocalConnector config action = do
+  storage <- makeAbsolute (storageDirectory config)
+  process <- bridgeProcess (bridgeRuntime config) ["serve", storage, systemName config, databaseName config]
+  withConnectorProcess process $ \connector -> do
+    ready <- timeout (startupTimeoutMicros config) (request connector [("op", Keyword "hello")])
+    case ready of
+      Just info | field "protocol" info == Just (IntEDN 1)
+               && field "version" info == Just (StringEDN (showVersion version)) -> action connector
+      Nothing -> throwIO (userError "Bridge startup timed out")
+      _ -> throwIO (userError "Bridge protocol/package version mismatch")
+
 -- The command must launch the bridge in serve mode; stderr stays visible.
 withConnector :: FilePath -> [String] -> (Connector -> IO a) -> IO a
-withConnector command args action = mask $ \restore -> do
+withConnector command args = withConnectorProcess (proc command args)
+
+withConnectorProcess :: CreateProcess -> (Connector -> IO a) -> IO a
+withConnectorProcess launch action = mask $ \restore -> do
   connector <- start
   result <- tryAny (restore (action connector))
   cleanup <- tryAny (stop connector)
@@ -25,7 +57,7 @@ withConnector command args action = mask $ \restore -> do
   either throwIO (\value -> either throwIO (const (pure value)) cleanup) result
   where
     start = do
-      (Just input, Just output, _, process) <- createProcess (proc command args)
+      (Just input, Just output, _, process) <- createProcess launch
         {std_in = CreatePipe, std_out = CreatePipe, std_err = Inherit}
       lock <- newMVar True
       let connector = Connector input output process lock

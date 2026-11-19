@@ -48,6 +48,7 @@
 
 (defn dispatch [conn req]
   (case (:op req)
+    :hello {:protocol 1 :version "0.1.0.0"}
     :transact (attributed-transact conn req)
     :query (d/q {:query (:query req) :args (into [(d/db conn)] (:args req))})
     :pull (d/pull (d/db conn) {:selector (:selector req) :eid (:eid req)})

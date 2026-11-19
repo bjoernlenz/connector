@@ -158,10 +158,10 @@ requestWith decode (Connector input output process lock) entries = do
           hPutStrLn input encoded
           line <- hGetLine output
           response <- either (throwIO . ProtocolFailure) pure (parseEDN line)
-          case field "ok" response of
-            Just (Boolean True) -> maybe (throwIO (ProtocolFailure "Bridge response lacks result")) (fmap Right . either (throwIO . ProtocolFailure) pure . decode) (field "result" response)
-            Just (Boolean False) | Just err <- field "error" response -> pure (Left (DatomicRejected err))
-            _ -> throwIO (ProtocolFailure "Malformed bridge response")
+          envelope <- either (throwIO . ProtocolFailure) pure (decodeEnvelope response)
+          case envelope of
+            Right value -> Right <$> either (throwIO . ProtocolFailure) pure (decode value)
+            Left err -> pure (Left (DatomicRejected err))
         case result of
           Right response -> pure (True, Right response)
           Left exception -> do
@@ -183,3 +183,25 @@ ignoreIO action = action `catch` (\e -> const (pure ()) (e :: IOException))
 
 startup :: IO a -> IO a
 startup action = action `catch` \(e :: IOException) -> throwIO (StartupFailure (show e))
+
+-- Protocol v1 has exactly one result or one structured error. A malformed
+-- rejection cannot be treated as a known, complete Datomic refusal.
+decodeEnvelope :: EDN -> Either String (Either EDN EDN)
+decodeEnvelope response = case response of
+  Map fields | length fields == 2 -> case (field "ok" response, field "result" response, field "error" response) of
+    (Just (Boolean True), Just value, Nothing) -> Right (Right value)
+    (Just (Boolean False), Nothing, Just err@(Map _))
+      | Just (StringEDN _) <- field "class" err
+      , Just message <- field "message" err
+      , stringOrNil message
+      , Just details <- field "data" err
+      , mapOrNil details -> Right (Left err)
+    _ -> Left "Malformed bridge response"
+  _ -> Left "Malformed bridge envelope"
+  where
+    stringOrNil (StringEDN _) = True
+    stringOrNil Nil = True
+    stringOrNil _ = False
+    mapOrNil (Map _) = True
+    mapOrNil Nil = True
+    mapOrNil _ = False

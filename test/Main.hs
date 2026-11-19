@@ -1,7 +1,8 @@
 module Main where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (try)
+import Control.Exception (try, throwIO)
+import System.Exit (exitFailure)
 import Control.Monad (unless, forever)
 import Datomic.Connector
 import Datomic.EDN
@@ -43,9 +44,13 @@ mock mode = case mode of
     forever (getLine >> putStrLn "{:ok true :result :next}" >> hFlush stdout)
   "bad-report" -> getLine >> putStrLn "{:ok true :result {:t 1}}" >> hFlush stdout
   "malformed" -> getLine >> putStrLn "garbage" >> hFlush stdout
+  "bad-error" -> getLine >> putStrLn "{:ok false :error nil}" >> hFlush stdout
+  "duplicate" -> getLine >> putStrLn "{:ok true :ok false :result nil}" >> hFlush stdout
+  "mixed" -> getLine >> putStrLn "{:ok true :result nil :error nil}" >> hFlush stdout
+  "exit-failure" -> exitFailure
   "reject" -> do
     _ <- getLine
-    putStrLn "{:ok false :error {:message \"rejected\"}}"
+    putStrLn "{:ok false :error {:class \"test.Rejection\" :message \"rejected\" :data {:cognitect.anomalies/category :cognitect.anomalies/incorrect}}}"
     hFlush stdout
     _ <- getLine
     putStrLn "{:ok true :result :recovered}"
@@ -73,7 +78,7 @@ tests = do
     refused (query c (Keyword "second") [])
   mapM_ (\mode -> withConnector exe ["--mock", mode] $ \c -> do
     refused (query c Nil [])
-    refused (query c Nil [])) ["malformed", "exit"]
+    refused (query c Nil [])) ["malformed", "exit", "bad-error", "duplicate", "mixed"]
   mapM_ (\mode -> withConnector exe ["--mock", mode] $ \c -> do
     result <- try (transact c (WriteContext (EntityId 1) (EntityId 2)) (Vector []))
     check (case result of Left (WriteOutcomeUnknown _) -> True; _ -> False) "Lost write must report unknown outcome"
@@ -87,6 +92,10 @@ tests = do
     check (case rejection of Left (DatomicRejected e) -> field "message" e == Just (StringEDN "rejected"); _ -> False) "Structured rejection lost"
     result <- query c Nil []
     check (result == Keyword "recovered") "A complete rejection must keep the connector usable"
+  original <- try (withConnector exe ["--mock", "exit-failure"] (\_ -> throwIO (LocalValidation "original"))) :: IO (Either ConnectorError ())
+  check (case original of Left (LocalValidation "original") -> True; _ -> False) "Cleanup replaced original failure"
+  cancelledScope <- timeout 100000 (withConnector exe ["--mock", "slow"] (\c -> query c Nil []))
+  check (cancelledScope == Nothing) "Cleanup replaced asynchronous cancellation"
   closed <- withConnector exe ["--mock", "exit"] pure
   refused (query closed Nil [])
   withConnector exe ["--mock", "echo"] $ \c -> do

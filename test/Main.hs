@@ -176,7 +176,7 @@ scalarTests bridge storage system database = withConnector bridge ["serve", stor
 reportTests :: IO ()
 reportTests = do
   let decode = decodeTransactionReport . either error id . parseEDN
-      good = "{:t 1 :tx 100 :tempids {\"x\" 200} :tx-data [[200 10 #connector/float \"0.1\" 100 true]]}"
+      good = "{:t 1 :tx 100 :tempids {\"x\" 200} :tx-data [[0 10 #connector/float \"0.1\" 100 true]]}"
   check (case decode good of Right r -> transactionBasis r == Basis 1 && map datomValue (transactionDatoms r) == [Tagged "connector/float" (StringEDN "0.1")]; _ -> False) "Report scalar lost"
   mapM_ (\text -> check (case decode text of Left _ -> True; _ -> False) "Accepted malformed report")
     ["nil", "{:t 1}", "{:t -1 :tx 100 :tempids {} :tx-data []}",

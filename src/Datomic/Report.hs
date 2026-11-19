@@ -49,8 +49,10 @@ decodeTransactionReport value = do
     tempid _ = Left "Invalid tempid mapping"
     datom (Vector [e,a,v,t,Boolean added]) = do
       unless (scalar v) (Left "Invalid datom scalar")
-      Datom <$> entity e <*> entity a <*> pure v <*> entity t <*> pure added
+      Datom <$> datomEntityId e <*> entity a <*> pure v <*> entity t <*> pure added
     datom _ = Left "Datom requires [entity attribute value transaction added]"
+    datomEntityId (IntEDN n) | n >= 0 = Right (EntityId n)
+    datomEntityId _ = Left "Expected nonnegative datom entity ID"
     scalar (Map _) = False
     scalar (List _) = False
     scalar (Set _) = False

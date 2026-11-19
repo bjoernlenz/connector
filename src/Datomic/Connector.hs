@@ -140,10 +140,12 @@ openSnapshot c requested action = do
     alive <- newMVar True
     let snapshot = Snapshot c token basis point alive
     result <- tryAny (restore (action snapshot))
-    cleanup <- tryAny $ modifyMVar_ alive $ \_ -> do
+    cleanup <- tryAny $ do
+      -- Wait for in-flight reads, then invalidate irrevocably before remote I/O.
+      modifyMVar_ alive (const (pure False))
       _ <- request c [("op", Keyword "snapshot/close"), ("snapshot", StringEDN token)]
         `catch` \e -> case e of ConnectorClosed -> pure Nil; _ -> throwIO e
-      pure False
+      pure ()
     either throwIO (\value -> either throwIO (const (pure value)) cleanup) result
   decode selector v = case (field "snapshot" v, field "t" v) of
     (Just (StringEDN token), Just (IntEDN t)) | not (null token) && t >= 0 -> do

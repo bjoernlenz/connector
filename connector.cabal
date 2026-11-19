@@ -25,7 +25,7 @@ data-files:
   bridge/src/connector/attribution.edn
 
 library
-  exposed-modules: Datomic.Connector, Datomic.EDN, Datomic.Runtime
+  exposed-modules: Datomic.Connector, Datomic.Error, Datomic.EDN, Datomic.Runtime
   other-modules: Paths_connector
   autogen-modules: Paths_connector
   hs-source-dirs: src

@@ -1,7 +1,7 @@
 module Main where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (IOException, try)
+import Control.Exception (try)
 import Control.Monad (unless, forever)
 import Datomic.Connector
 import Datomic.EDN
@@ -16,7 +16,7 @@ check ok message = unless ok (ioError (userError message))
 
 refused :: IO a -> IO ()
 refused action = do
-  result <- try (action >> pure ()) :: IO (Either IOException ())
+  result <- try (action >> pure ()) :: IO (Either ConnectorError ())
   check (either (const True) (const False) result) "Expected refusal"
 
 main :: IO ()
@@ -71,8 +71,17 @@ tests = do
   mapM_ (\mode -> withConnector exe ["--mock", mode] $ \c -> do
     refused (query c Nil [])
     refused (query c Nil [])) ["malformed", "exit"]
+  withConnector exe ["--mock", "malformed"] $ \c -> do
+    result <- try (transact c (WriteContext (EntityId 1) (EntityId 2)) (Vector []))
+    check (case result of Left (WriteOutcomeUnknown _) -> True; _ -> False) "Lost write must report unknown outcome"
+    result2 <- try (query c Nil [])
+    check (case result2 of Left ConnectorClosed -> True; _ -> False) "Failed exchange must close connector"
+  withConnector exe ["--mock", "slow"] $ \c -> do
+    cancelled <- timeout 100000 (transact c (WriteContext (EntityId 1) (EntityId 2)) (Vector []))
+    check (cancelled == Nothing) "Write cancellation must retain timeout semantics"
   withConnector exe ["--mock", "reject"] $ \c -> do
-    refused (query c Nil [])
+    rejection <- try (query c Nil [])
+    check (case rejection of Left (DatomicRejected e) -> field "message" e == Just (StringEDN "rejected"); _ -> False) "Structured rejection lost"
     result <- query c Nil []
     check (result == Keyword "recovered") "A complete rejection must keep the connector usable"
   closed <- withConnector exe ["--mock", "exit"] pure

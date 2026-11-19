@@ -169,7 +169,7 @@ The `experiment/` files are optional example inputs, absent from the bridge runt
   operations. User transaction functions are excluded in this experiment.
 - This is a trusted local connector, not a security boundary. Someone directly
   accessing Datomic can bypass it. There are no request timeouts, retries or crash recovery;
-  failed calls raise IO exceptions containing the bridge's EDN error response.
+  failed calls raise typed `ConnectorError` exceptions (see below).
 - In this managed workspace Java's Maven downloads were blocked. The demonstrated
   run used direct downloads of Datomic's flattened POM dependencies in
   `.cache/runtime` and `.cache/bridge-classpath` containing
@@ -181,3 +181,19 @@ The `experiment/` files are optional example inputs, absent from the bridge runt
 [Client API](https://docs.datomic.com/client-api/datomic.client.api.html),
 [transaction entity metadata](https://docs.datomic.com/reference/best.html),
 [Clojure installation](https://clojure.org/guides/install_clojure).
+
+## Typed failures (caller compatibility)
+
+Catch `ConnectorError` (also exported from `Datomic.Connector`): `LocalValidation`
+is rejected before sending; `DatomicRejected EDN` retains the complete bridge
+class, message and exception data, including Datomic anomaly keys. It leaves the
+connector usable. `StartupFailure` covers launcher/startup failures and version
+mismatch. `ProtocolFailure` and `ConnectorClosed` indicate unusable connections.
+`WriteOutcomeUnknown SomeException` retains the cause of a failed write exchange;
+the transaction may have committed. Reconnect and reconcile before any retry.
+
+This deliberately changes the exception API: callers catching `IOException` for
+connector failures must catch `ConnectorError` instead. Unrelated filesystem IO can
+still throw `IOException`. Asynchronous exceptions are rethrown unchanged, including
+during writes: cancellation remains recognizable and may also leave a committed
+write. Cleanup preserves the original exception. There are no automatic retries.

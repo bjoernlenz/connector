@@ -1,6 +1,6 @@
 module Main where
 
-import Control.Exception (try, IOException)
+import Control.Exception (try)
 import Control.Monad (unless)
 import Datomic.Connector
 import Datomic.EDN
@@ -40,12 +40,12 @@ main = do
                (Keyword "test/key", StringEDN key),
                (Keyword "test/value", StringEDN "Hello from Haskell: Björn")]])
             putStrLn ("Transaction report: " ++ renderEDN r)
-            invalid <- try (transact c (WriteContext (EntityId 0) v) (Vector [])) :: IO (Either IOException EDN)
+            invalid <- try (transact c (WriteContext (EntityId 0) v) (Vector [])) :: IO (Either ConnectorError EDN)
             check (either (const True) (const False) invalid) "Invalid context was accepted"
-            unknown <- try (transact c (WriteContext (EntityId 999999999999) v) (Vector [])) :: IO (Either IOException EDN)
+            unknown <- try (transact c (WriteContext (EntityId 999999999999) v) (Vector [])) :: IO (Either ConnectorError EDN)
             check (either (const True) (const False) unknown) "Unknown actor was accepted"
             override <- try (transact c (WriteContext a v)
-              (edn "[{:db/id \"datomic.tx\" :write/actor 1}]")) :: IO (Either IOException EDN)
+              (edn "[{:db/id \"datomic.tx\" :write/actor 1}]")) :: IO (Either ConnectorError EDN)
             check (either (const True) (const False) override) "Metadata override was accepted"
             putStrLn "PASS: invalid context, nonexistent actor and attribution override refused"
           "read" -> pure ()

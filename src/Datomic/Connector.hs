@@ -1,10 +1,12 @@
+{-# LANGUAGE ScopedTypeVariables #-}
 module Datomic.Connector
-  (Connector, EntityId(..), WriteContext(..), withConnector,
+  (Connector, ConnectorError(..), EntityId(..), WriteContext(..), withConnector,
    LocalConfig(..), defaultLocalConfig, withLocalConnector, transact, query, pull) where
 
 import Control.Concurrent.MVar
-import Control.Exception (SomeException, IOException, mask, try, throwIO, catch, toException)
+import Control.Exception (SomeException, SomeAsyncException, IOException, mask, try, throwIO, catch, toException, fromException)
 import Control.Monad (void)
+import Datomic.Error
 import Datomic.EDN
 import Datomic.Runtime
 import Data.Version (showVersion)
@@ -34,15 +36,17 @@ defaultLocalConfig storage system database = LocalConfig storage system database
 -- Resource paths come from Cabal, not the caller's working directory.
 withLocalConnector :: LocalConfig -> (Connector -> IO a) -> IO a
 withLocalConnector config action = do
-  storage <- makeAbsolute (storageDirectory config)
-  process <- bridgeProcess (bridgeRuntime config) ["serve", storage, systemName config, databaseName config]
+  process <- startup $ do
+    storage <- makeAbsolute (storageDirectory config)
+    bridgeProcess (bridgeRuntime config) ["serve", storage, systemName config, databaseName config]
   withConnectorProcess process $ \connector -> do
-    ready <- timeout (startupTimeoutMicros config) (request connector [("op", Keyword "hello")])
+    ready <- (timeout (startupTimeoutMicros config) (request connector [("op", Keyword "hello")]))
+      `catch` \(e :: ConnectorError) -> throwIO (StartupFailure (show e))
     case ready of
       Just info | field "protocol" info == Just (IntEDN 1)
                && field "version" info == Just (StringEDN (showVersion version)) -> action connector
-      Nothing -> throwIO (userError "Bridge startup timed out")
-      _ -> throwIO (userError "Bridge protocol/package version mismatch")
+      Nothing -> throwIO (StartupFailure "Bridge startup timed out")
+      _ -> throwIO (StartupFailure "Bridge protocol/package version mismatch")
 
 -- The command must launch the bridge in serve mode; stderr stays visible.
 withConnector :: FilePath -> [String] -> (Connector -> IO a) -> IO a
@@ -50,7 +54,7 @@ withConnector command args = withConnectorProcess (proc command args)
 
 withConnectorProcess :: CreateProcess -> (Connector -> IO a) -> IO a
 withConnectorProcess launch action = mask $ \restore -> do
-  connector <- start
+  connector <- startup start
   result <- tryAny (restore (action connector))
   cleanup <- tryAny (stop connector)
   -- Cleanup must not replace the original exception (including cancellation).
@@ -62,7 +66,7 @@ withConnectorProcess launch action = mask $ \restore -> do
       lock <- newMVar True
       let connector = Connector input output process lock
       setup <- tryAny (mapM_ (\h -> hSetEncoding h utf8 >> hSetBuffering h LineBuffering) [input,output])
-      either (\e -> stop connector >> throwIO e) (const (pure connector)) setup
+      either (\e -> tryAny (stop connector) >> throwIO e) (const (pure connector)) setup
     stop (Connector input output process lock) = do
       healthy <- modifyMVar lock (\open -> pure (False, open))
       ignoreIO (hClose input)
@@ -75,13 +79,13 @@ withConnectorProcess launch action = mask $ \restore -> do
       ignoreIO (hClose output)
       case code of
         Just ExitSuccess -> pure ()
-        Just exit | healthy -> throwIO (userError ("Bridge exited: " ++ show exit))
-        Nothing | healthy -> throwIO (userError "Bridge did not shut down within two seconds")
+        Just exit | healthy -> throwIO (ProtocolFailure ("Bridge exited: " ++ show exit))
+        Nothing | healthy -> throwIO (ProtocolFailure "Bridge did not shut down within two seconds")
         _ -> pure ()
 
 transact :: Connector -> WriteContext -> EDN -> IO EDN
 transact c (WriteContext (EntityId a) (EntityId v)) tx
-  | a <= 0 || v <= 0 = throwIO (userError "WriteContext requires positive entity IDs")
+  | a <= 0 || v <= 0 = throwIO (LocalValidation "WriteContext requires positive entity IDs")
   | otherwise = request c
       [("op", Keyword "transact"), ("context", Map [(Keyword "actor", IntEDN a), (Keyword "via", IntEDN v)]),
        ("tx-data", tx)]
@@ -97,31 +101,39 @@ pull c selector eid = request c [("op", Keyword "pull"), ("selector", selector),
 request :: Connector -> [(String, EDN)] -> IO EDN
 request (Connector input output process lock) entries = do
   -- Validate the entire value before writing even one byte to the stream.
-  encoded <- either (throwIO . userError) pure (encodeEDN (Map [(Keyword k,v) | (k,v) <- entries]))
+  encoded <- either (throwIO . LocalValidation) pure (encodeEDN (Map [(Keyword k,v) | (k,v) <- entries]))
   exchange encoded
  where
   exchange encoded = mask $ \restore -> do
     outcome <- modifyMVar lock $ \healthy ->
-      if not healthy then pure (False, Left (toException (userError "Connector is closed after an interrupted or failed exchange; transaction outcome may be unknown")))
+      if not healthy then pure (False, Left (toException ConnectorClosed))
       else do
         result <- tryAny $ restore $ do
           hPutStrLn input encoded
           line <- hGetLine output
-          response <- either (throwIO . userError) pure (parseEDN line)
+          response <- either (throwIO . ProtocolFailure) pure (parseEDN line)
           case field "ok" response of
-            Just (Boolean True) -> maybe (throwIO (userError "Bridge response lacks result")) (pure . Right) (field "result" response)
-            Just (Boolean False) | Just err <- field "error" response -> pure (Left (userError ("Datomic bridge: " ++ renderEDN err)))
-            _ -> throwIO (userError "Malformed bridge response")
+            Just (Boolean True) -> maybe (throwIO (ProtocolFailure "Bridge response lacks result")) (pure . Right) (field "result" response)
+            Just (Boolean False) | Just err <- field "error" response -> pure (Left (DatomicRejected err))
+            _ -> throwIO (ProtocolFailure "Malformed bridge response")
         case result of
           Right response -> pure (True, Right response)
           Left exception -> do
-            ignoreIO (terminateProcess process)
+            _ <- tryAny (terminateProcess process)
             -- Commit the closed state before rethrowing, including async exceptions.
-            pure (False, Left exception)
+            pure (False, Left (exchangeFailure exception))
     either throwIO (either throwIO pure) outcome
+  exchangeFailure exception
+    | Just (_ :: SomeAsyncException) <- fromException exception = exception
+    | lookup "op" entries == Just (Keyword "transact") = toException (WriteOutcomeUnknown exception)
+    | Just (_ :: ConnectorError) <- fromException exception = exception
+    | otherwise = toException (ProtocolFailure (show exception))
 
 tryAny :: IO a -> IO (Either SomeException a)
 tryAny = try
 
 ignoreIO :: IO () -> IO ()
 ignoreIO action = action `catch` (\e -> const (pure ()) (e :: IOException))
+
+startup :: IO a -> IO a
+startup action = action `catch` \(e :: IOException) -> throwIO (StartupFailure (show e))

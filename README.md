@@ -169,12 +169,13 @@ The `experiment/` files are optional example inputs, absent from the bridge runt
 - This is a trusted local connector, not a security boundary. Someone directly
   accessing Datomic can bypass it. There are no request timeouts, retries or crash recovery;
   failed calls raise typed `ConnectorError` exceptions (see below).
-- In this managed workspace Java's Maven downloads were blocked. The demonstrated
-  run used direct downloads of Datomic's flattened POM dependencies in
+- Initial managed-workspace runs could not download Maven dependencies and used
+  direct downloads of Datomic's flattened POM dependencies in
   `.cache/runtime` and `.cache/bridge-classpath` containing
   `.cache/runtime/*:bridge/src`. The launcher accepts a cached classpath; normal
   machines use the Clojure CLI with `deps.edn`. Caches, tools and databases are
-  ignored by Git. Intel macOS was tested; Apple Silicon installation was not.
+  ignored by Git. A later clean Maven preparation and CLI startup check succeeded
+  with network permission. Intel macOS was tested; Apple Silicon was not.
 
 [Datomic Local setup and durability](https://docs.datomic.com/datomic-local.html),
 [Client API](https://docs.datomic.com/client-api/datomic.client.api.html),
@@ -242,3 +243,29 @@ Source information follows this repository's configured GitHub remote. GHC 9.6.7
 is the tested compiler. Maintainer identity is intentionally unspecified; `cabal
 check` reports only the corresponding `no-maintainer` warning. No other compiler
 or platform result is implied by the CI matrix until that job actually passes.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` uses GitHub Actions (the configured source host) with
+GHC 9.6.7, Java 21 and pinned Clojure CLI on Ubuntu x64, Intel macOS and ARM macOS.
+Runner labels describe scheduled coverage, not locally verified platforms.
+Dependency preparation is separate from the subsequent checks:
+
+- `test/clojure-startup.py prepare STATE` resolves the pinned graph into a fresh,
+  isolated Maven repository; `verify STATE` starts the CLI and serves reads with
+  HTTP(S) proxies blocked. STATE must be a new absolute directory for preparation.
+- Haskell dependency preparation builds both projects with tests enabled.
+  Acceptance and starter integration then run with Cabal `--offline`.
+- Acceptance includes live scalar/report/snapshot checks, process restart,
+  cancellation, provisioning/refusals, and Java-only runtime relocation/checksums.
+- `test/distribution.py` builds both source archives, installs their executables,
+  hides the unpacked sources, removes resource overrides and source classpath
+  entries, and verifies installed provisioning plus the starter write/read and
+  migration flow from an unrelated directory.
+- `scripts/check-metadata` rejects Cabal diagnostics except `no-maintainer`, which
+  is intentionally left unset. CI does not publish packages or push changes.
+
+To run the distribution check locally, prepare Cabal dependencies first and set
+`DATOMIC_CONNECTOR_CLASSPATH` to absolute dependency jars (or a jar wildcard).
+The Java-only checks do not invoke a dependency resolver. Cabal's offline option
+and the CLI proxy check are not an OS-level network isolation guarantee.

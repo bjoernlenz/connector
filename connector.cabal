@@ -27,6 +27,10 @@ extra-source-files:
   scripts/package-runtime
   test/runtime.py
   test/provision.py
+  test/distribution.py
+  test/clojure-startup.py
+  scripts/check-metadata
+  .github/workflows/ci.yml
   starter/connector-starter.cabal
   starter/cabal.project
   starter/README.md

@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""Reject Cabal diagnostics except the deliberately unspecified maintainer."""
+from pathlib import Path
+import re
+import subprocess
+
+root = Path(__file__).resolve().parent.parent
+for directory in [root, root / "starter"]:
+    result = subprocess.run(["cabal", "check"], cwd=directory, capture_output=True, text=True)
+    output = result.stdout + result.stderr
+    print(output, end="")
+    diagnostics = re.findall(r"(?:Warning|Error): \[([^]]+)\]", output)
+    assert result.returncode == 0 and all(code == "no-maintainer" for code in diagnostics), output
+print("PASS: package metadata (maintainer intentionally unspecified)")

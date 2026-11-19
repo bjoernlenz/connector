@@ -5,3 +5,4 @@ dist-newstyle/
 data/
 *.hi
 *.o
+__pycache__/

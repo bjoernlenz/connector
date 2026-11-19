@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 export connector_datadir="$(pwd)"
 if [ -d .tools/jdk ]; then export JAVA_HOME="$(pwd)/.tools/jdk"; fi
 if [ -f .cache/bridge-classpath ]; then
-  export DATOMIC_CONNECTOR_CLASSPATH="$(pwd)/.cache/runtime/*"
+  export DATOMIC_CONNECTOR_CLASSPATH="${DATOMIC_CONNECTOR_CLASSPATH:-$(cat .cache/bridge-classpath)}"
 elif [ -x .tools/clojure/clojure ]; then
   export DATOMIC_CONNECTOR_CLOJURE="$(pwd)/.tools/clojure/clojure"
 fi

@@ -1,6 +1,7 @@
 """Exercise generic provisioning through either installed CLI or bundled runtime."""
 from pathlib import Path
 import fcntl
+import re
 import subprocess
 import sys
 import tempfile
@@ -34,6 +35,17 @@ with tempfile.TemporaryDirectory(prefix="connector-provision-") as temporary:
     invalid = run("serve", "custom", request='{:op :pull :snapshot "missing" :selector [:db/id] :eid :write/actor}\n' + checks).splitlines()
     assert ':ok false' in invalid[0] and 'Unknown or released snapshot' in invalid[0], invalid
     assert all(line.startswith("{:ok true,") for line in invalid[1:]), invalid
+    with subprocess.Popen([bridge, "serve", storage, "project", "custom"],
+                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, cwd=work) as process:
+        def exchange(request):
+            process.stdin.write(request + "\n")
+            process.stdin.flush()
+            return process.stdout.readline()
+        opened = exchange('{:op :snapshot/open}')
+        token = re.search(r':snapshot "([^"\n]+)"', opened).group(1)
+        assert ':ok true' in exchange('{:op :snapshot/close :snapshot "' + token + '"}')
+        assert 'Unknown or released snapshot' in exchange('{:op :pull :selector [:db/id] :eid :write/actor :snapshot "' + token + '"}')
+        assert ':ok true' in exchange('{:op :pull :selector [:db/id] :eid :write/actor}')
     before = run("serve", "custom", request=checks).splitlines()
     assert all(line.startswith("{:ok true,") for line in before), before
     assert '"Alice"' in before[0] and '"Project"' in before[0], before

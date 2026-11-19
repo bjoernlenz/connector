@@ -153,6 +153,9 @@ The `experiment/` files are optional example inputs, absent from the bridge runt
   strings, keywords, symbols, maps, lists, vectors, sets and tagged values.
   Decimal scale is preserved. Instants and UUIDs use `Tagged "inst"`/`Tagged "uuid"`
   with a `StringEDN`. URIs use `Tagged "connector/uri" (StringEDN uri)`;
+  32-bit floats use `Tagged "connector/float" (StringEDN "0.1")`, retaining their
+  JVM type for equality queries (ordinary EDN floating literals are doubles).
+  The float tag also accepts `"NaN"`, `"Infinity"` and `"-Infinity"`.
   binary wire values use `Tagged "connector/bytes" (StringEDN base64)`. Datomic
   Local 1.0.301 does not provide a `:db.type/bytes` attribute type.
   Ratios, characters and namespaced-map syntax are deliberately unsupported;

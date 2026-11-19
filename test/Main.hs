@@ -91,6 +91,7 @@ ednTests = do
      DecimalEDN (-12500) (-4), DecimalEDN 123 100,
      StringEDN "Björn\n\t\x1f600", Tagged "uuid" (StringEDN "550e8400-e29b-41d4-a716-446655440000"),
      Tagged "connector/uri" (StringEDN "https://example.org"), Tagged "connector/bytes" (StringEDN "AAH+/w=="),
+     Tagged "connector/float" (StringEDN "0.1"),
      Map [(Keyword "a/b", Set [Boolean False, Nil])]]
   mapM_ (\(text, expected) -> check (parseEDN text == Right expected) ("Wrong number: " ++ text))
     [("-1.25", FloatEDN (-1.25)), ("+1.25", FloatEDN 1.25), ("-42N", BigIntEDN (-42)),
@@ -113,7 +114,7 @@ scalarTests bridge storage system database = withConnector bridge ["serve", stor
   let entity m = case field "db/id" m of Just (IntEDN i) -> EntityId i; _ -> error "Missing fixture identity"
       context = WriteContext (entity a) (entity v)
       values = [("long", IntEDN (-42)), ("bigint", BigIntEDN (-99999999999999999999999)),
-                ("double", FloatEDN (-1.25)), ("float", FloatEDN 1.25),
+                ("double", FloatEDN (-1.25)), ("float", Tagged "connector/float" (StringEDN "0.1")),
                 ("bigdec", DecimalEDN (-12500) (-4)), ("boolean", Boolean True),
                 ("string", StringEDN "Björn\n\x1f600"), ("keyword", Keyword "sample/value"),
                 ("uuid", Tagged "uuid" (StringEDN "550e8400-e29b-41d4-a716-446655440000")),
@@ -135,4 +136,8 @@ scalarTests bridge storage system database = withConnector bridge ["serve", stor
     let actual = field ("scalar/" ++ kind) result
         normalized = if kind == "ref" then actual >>= field "db/id" else actual
     check (normalized == Just expected) ("Scalar mismatch: " ++ kind ++ " in " ++ show result)) values
-  putStrLn "PASS: Datomic scalar types round trip through transactions and pull"
+  mapM_ (\(kind, value) -> do
+    rows <- query c (literal "[:find ?e :in $ ?attribute ?value :where [?e ?attribute ?value]]") [attr kind, value]
+    check (case rows of Vector found -> Vector [eid] `elem` found; _ -> False)
+      ("Scalar cannot be reused as an equality query input: " ++ kind ++ " in " ++ show rows)) values
+  putStrLn "PASS: Datomic scalar types round trip through transactions, pull and equality queries"

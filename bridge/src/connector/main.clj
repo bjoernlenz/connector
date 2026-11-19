@@ -9,6 +9,7 @@
   (with-open [r (java.io.PushbackReader. (java.io.StringReader. s))]
     (let [options {:eof ::eof
                    :readers {'connector/uri #(java.net.URI. %)
+                             'connector/float #(Float/parseFloat ^String %)
                              'connector/bytes #(.decode (java.util.Base64/getDecoder) ^String %)}}
           v (edn/read options r)]
       (when (or (= v ::eof) (not= ::eof (edn/read options r)))
@@ -65,6 +66,9 @@
            (fn [x]
              (cond
                (instance? java.math.BigInteger x) (bigint x)
+               ;; EDN's ordinary floating literal reads as Double, which cannot
+               ;; match e.g. a stored Float 0.1 in an equality query.
+               (instance? Float x) (tagged-literal 'connector/float (Float/toString x))
                (instance? java.net.URI x) (tagged-literal 'connector/uri (str x))
                (bytes? x) (tagged-literal 'connector/bytes (.encodeToString (java.util.Base64/getEncoder) x))
                :else x)) v))

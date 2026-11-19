@@ -59,7 +59,7 @@ decodeTransactionReport value = do
     scalar Nil = False
     scalar (Tagged tag (StringEDN _)) = tag `elem` ["inst", "uuid", "connector/float", "connector/uri", "connector/bytes"]
     scalar (Tagged _ _) = False
-    scalar (Vector xs) = all scalar xs -- Datomic tuple
+    scalar (Vector xs) = all (\x -> x == Nil || scalar x) xs -- Partial composite tuple
     scalar _ = True
     unique [] = []
     unique (x:xs) = x : unique (filter (/= x) xs)

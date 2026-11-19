@@ -310,6 +310,22 @@ scalarTests bridge storage system database = withConnector bridge ["serve", stor
   putStrLn "PASS: snapshot query/pull remain pinned while ordinary reads advance; released handle refused"
   putStrLn "PASS: Datomic scalar types round trip through transactions, pull and equality queries"
   historicalTests c context
+  compositeTupleTests c context
+
+compositeTupleTests :: Connector -> WriteContext -> IO ()
+compositeTupleTests c context = do
+  let literal = either error id . parseEDN
+  _ <- transactReport c context (literal "[{:db/ident :partial/first :db/valueType :db.type/string :db/cardinality :db.cardinality/one} {:db/ident :partial/second :db/valueType :db.type/string :db/cardinality :db.cardinality/one} {:db/ident :partial/pair :db/valueType :db.type/tuple :db/tupleAttrs [:partial/first :partial/second] :db/cardinality :db.cardinality/one}]")
+  first <- transactReport c context (literal "[{:db/id \"partial\" :partial/first \"one\"}]")
+  check (Vector [StringEDN "one", Nil] `elem` map datomValue (transactionDatoms first)) "Partial composite tuple missing from report"
+  eid <- case lookup (StringTempId "partial") (transactionTempids first) of
+    Just (EntityId n) -> pure (IntEDN n)
+    _ -> fail "Missing partial tuple entity"
+  second <- transactReport c context (Vector [Vector [Keyword "db/add", eid, Keyword "partial/second", StringEDN "two"]])
+  check (Vector [StringEDN "one", StringEDN "two"] `elem` map datomValue (transactionDatoms second)) "Completed composite tuple missing from report"
+  result <- pull c (literal "[:partial/pair]") eid
+  check (field "partial/pair" result == Just (Vector [StringEDN "one", StringEDN "two"])) "Composite tuple pull mismatch"
+  putStrLn "PASS: partial composite tuple report and subsequent write on same connector"
 
 snapshotTests :: FilePath -> IO ()
 snapshotTests exe = do
@@ -430,7 +446,9 @@ reportTests = do
   let decode = decodeTransactionReport . either error id . parseEDN
       good = "{:t 1 :tx 100 :tempids {\"x\" 200} :tx-data [[0 10 #connector/float \"0.1\" 100 true]]}"
   check (case decode good of Right r -> transactionBasis r == Basis 1 && map datomValue (transactionDatoms r) == [Tagged "connector/float" (StringEDN "0.1")]; _ -> False) "Report scalar lost"
+  check (case decode "{:t 1 :tx 100 :tempids {} :tx-data [[2 3 [\"one\" nil] 100 true]]}" of Right _ -> True; _ -> False) "Partial tuple rejected"
   mapM_ (\text -> check (case decode text of Left _ -> True; _ -> False) "Accepted malformed report")
-    ["nil", "{:t 1}", "{:t -1 :tx 100 :tempids {} :tx-data []}",
+    ["{:t 1 :tx 100 :tempids {} :tx-data [[2 3 nil 100 true]]}",
+     "nil", "{:t 1}", "{:t -1 :tx 100 :tempids {} :tx-data []}",
      "{:t 1 :tx 100 :tempids {} :tx-data [[2 3 4 101 true]]}",
      "{:t 1 :tx 100 :tempids {} :tx-data [[2 3 4 100 1]]}"]

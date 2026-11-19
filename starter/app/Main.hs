@@ -10,9 +10,10 @@ main :: IO ()
 main = do
   args <- getArgs
   case args of
-    ("migrate":storage:system:database:files) | not (null files) -> do
+    ("migrate":storage:system:database:firstArg:rest) -> do
+      specs <- either fail pure (migrationSpecs (firstArg : rest))
       config <- configure storage system database
-      migrations <- mapM (\file -> loadMigration file file) files
+      migrations <- mapM (uncurry loadMigration) specs
       withLocalConnector config (\c -> runMigrations c migrations)
     [mode, storage, system, database] -> do
       config <- configure storage system database
@@ -22,5 +23,17 @@ main = do
           context <- resolveContext c
           _ <- saveNote c context "hello" "Hello from the separate starter"
           findNote c "hello" >>= print
-        _ -> fail "Expected init or demo"
-    _ -> fail "Usage: starter init|demo|migrate STORAGE SYSTEM DATABASE [MIGRATION.edn ...]"
+        _ -> fail usage
+    _ -> fail usage
+
+migrationSpecs :: [String] -> Either String [(String, FilePath)]
+migrationSpecs [] = Right []
+migrationSpecs ("--migration":ident:path:rest) | not (null ident) && not (null path) =
+  ((ident, path) :) <$> migrationSpecs rest
+migrationSpecs _ = Left usage
+
+usage :: String
+usage = unlines
+  [ "Usage: starter init|demo STORAGE SYSTEM DATABASE"
+  , "       starter migrate STORAGE SYSTEM DATABASE --migration ID PATH [--migration ID PATH ...]"
+  ]

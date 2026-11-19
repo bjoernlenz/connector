@@ -52,7 +52,17 @@ with tempfile.TemporaryDirectory(prefix="connector-distribution-") as temporary:
     # An adoption project uses its own immutable migration files.
     migration = work / "001.edn"
     migration.write_text('[{:db/ident :note/category :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]')
-    for _ in range(2):
-        subprocess.run([starter_bin, "migrate", storage, "adoption", "notes", str(migration)],
+    second = work / "002.edn"
+    second.write_text('[{:note/text "migration ran"}]')
+    # The first ID is what the path-only CLI recorded for a relative path.
+    for first_path, second_path in [("001.edn", "002.edn"), ("./001.edn", "./002.edn")]:
+        subprocess.run([starter_bin, "migrate", storage, "adoption", "notes",
+                        "--migration", "001.edn", first_path,
+                        "--migration", "002-add-note", second_path],
                        cwd=work, env=env, check=True)
+    result = subprocess.run(
+        [str(bin_dir / "datomic-bridge"), "serve", storage, "adoption", "notes"],
+        input='{:op :query :query [:find ?r :where [:project/migrations :migration/revision ?r]]}\n',
+        cwd=work, env=env, check=True, text=True, capture_output=True)
+    assert ":result [[2]]" in result.stdout, result.stdout
 print("PASS: source distributions install and serve outside source trees; installed starter adopts and migrates")

@@ -45,11 +45,14 @@ For a database initialized with this project, run ordered, immutable UTF-8 EDN
 transaction vector files:
 
 ```sh
-cabal run starter -- migrate /absolute/storage notes-system notes migrations/001-note-category.edn
+cabal run starter -- migrate /absolute/storage notes-system notes --migration 001-note-category migrations/001-note-category.edn
 ```
 
-The CLI uses each supplied path as its migration ID; keep that spelling stable
-(or use `loadMigration stableId path` in your application). SHA-256 covers exact
+Repeat `--migration ID PATH` for each file in application order. Keep the ID
+stable when moving or renaming the file. For a migration already applied with
+the old CLI, use the exact path spelling from that invocation as its ID. For
+example, pass `--migration migrations/001-note-category.edn ./migrations/001-note-category.edn`
+if the old invocation used `migrations/001-note-category.edn`. SHA-256 covers exact
 file bytes, including whitespace. An applied ID with a different checksum fails;
 add a new migration instead of editing an applied file. Keep files in version
 control and pass the same ordered list on every run. The library resolves the

@@ -155,7 +155,7 @@ Add immutable migration files containing EDN transaction vectors, then run the
 ordered list against your existing database:
 
 ```sh
-cabal run starter -- migrate /Users/bjoern/code/my-app/data my-app development migrations/001-note-category.edn
+cabal run starter -- migrate /Users/bjoern/code/my-app/data my-app development --migration 001-note-category migrations/001-note-category.edn
 ```
 
 Repeat runs with the same migration IDs and checksums are harmless. Do not edit

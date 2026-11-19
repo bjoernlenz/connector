@@ -22,6 +22,7 @@ with subprocess.Popen(
         '{:op :transact :context {:actor 0 :via 1} :tx-data []}',
         '{:op :transact :context {:actor 1} :tx-data []}',
         '{:op :bootstrap :tx-data []}',
+        '{:op :provision :tx-data []}',
     ]:
         result = request(tx)
         assert result.startswith('{:ok false,'), result

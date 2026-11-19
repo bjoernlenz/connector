@@ -17,7 +17,7 @@ cabal build --offline --build-summary=.cache/cabal-build.log all
 cabal test --offline --build-summary=.cache/cabal-build.log connector-tests --test-show-details=direct
 BIN=$(cabal list-bin first-contact)
 TEST_BIN=$(cabal list-bin connector-tests)
-scripts/bridge bootstrap "$STORAGE" "$SYSTEM" "$DATABASE"
+scripts/bridge provision "$STORAGE" "$SYSTEM" "$DATABASE" experiment/schema.edn experiment/identities.edn
 "$BIN" write "$STORAGE" "$SYSTEM" "$DATABASE" "$KEY"
 # The prior Haskell and JVM processes have both exited before this new pair starts.
 "$BIN" read "$STORAGE" "$SYSTEM" "$DATABASE" "$KEY"

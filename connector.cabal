@@ -8,6 +8,7 @@ extra-source-files:
   README.md
   deps.edn
   bridge/src/connector/main.clj
+  bridge/src/connector/attribution.edn
   experiment/*.edn
   experiment/MissingContext.hs
   experiment/refusal.py
@@ -16,10 +17,12 @@ extra-source-files:
   scripts/acceptance
   scripts/package-runtime
   test/runtime.py
+  test/provision.py
 
 data-files:
   deps.edn
   bridge/src/connector/main.clj
+  bridge/src/connector/attribution.edn
 
 library
   exposed-modules: Datomic.Connector, Datomic.EDN, Datomic.Runtime

@@ -52,7 +52,7 @@
     :transact (attributed-transact conn req)
     :query (d/q {:query (:query req) :args (into [(d/db conn)] (:args req))})
     :pull (d/pull (d/db conn) {:selector (:selector req) :eid (:eid req)})
-    (fail "Unknown operation (bootstrap is a separate process mode)")))
+    (fail "Unknown operation (provisioning is a separate process mode)")))
 
 (defn error-response [e]
   {:ok false :error {:class (.getName (class e)) :message (.getMessage e)
@@ -70,23 +70,42 @@
                :else x)) v))
     (flush)))
 
-(defn bootstrap [client db-name]
-  (d/create-database client {:db-name db-name})
-  (let [conn (d/connect client {:db-name db-name})]
-    ;; Fixed first-contact bootstrap, deliberately absent from the normal protocol.
-    (doseq [path ["experiment/schema.edn" "experiment/identities.edn"]]
-      (d/transact conn {:tx-data (read-edn (slurp path))}))
-    (emit {:ok true :result {:actor (d/pull (d/db conn) '[*] :identity/bjoern)
-                            :via (d/pull (d/db conn) '[*] :identity/conversation-app)}})))
+(defn provision [client db-name storage-dir paths]
+  ;; Parse every initial file before creating anything. Files are explicit inputs
+  ;; from the project; the connector owns only the attribution schema.
+  (let [transactions (mapv (fn [path]
+                             (let [tx (read-edn (slurp path))]
+                               (when-not (vector? tx) (fail "Provisioning files must contain transaction vectors"))
+                               tx))
+                           (cons (io/resource "connector/attribution.edn") paths))]
+    ;; create-database always returns true, even for an existing database. Guard
+    ;; the explicit existence check and all initialization against other invocations.
+    (.mkdirs (io/file storage-dir))
+    (with-open [channel (java.nio.channels.FileChannel/open
+                          (.toPath (io/file storage-dir ".connector-provision.lock"))
+                          (into-array java.nio.file.OpenOption
+                            [java.nio.file.StandardOpenOption/CREATE java.nio.file.StandardOpenOption/WRITE]))]
+      (let [held (.tryLock channel)]
+        (when-not held (fail "Another connector provisioning command is already in progress"))
+        (with-open [lock held]
+          (when (some #{db-name} (d/list-databases client {:limit -1}))
+            (fail "Database already exists; apply subsequent changes with attributed transactions"))
+          (d/create-database client {:db-name db-name})
+          (let [conn (d/connect client {:db-name db-name})]
+            (doseq [tx transactions]
+              (d/transact conn {:tx-data tx}))
+            (emit {:ok true :result {:db-name db-name :t (:t (d/db conn))
+                                    :initial-transactions (count transactions)}})))))))
 
-(defn -main [mode storage-dir system db-name]
-  (when-not (and (#{"bootstrap" "serve"} mode) storage-dir system db-name)
-    (throw (ex-info "Usage: bootstrap|serve STORAGE-DIR SYSTEM DB-NAME" {})))
+(defn -main [mode storage-dir system db-name & paths]
+  (when-not (and (#{"provision" "serve"} mode) storage-dir system db-name
+                 (or (= mode "provision") (empty? paths)))
+    (throw (ex-info "Usage: provision STORAGE-DIR SYSTEM DB-NAME [INITIAL-TX.edn ...] | serve STORAGE-DIR SYSTEM DB-NAME" {})))
   (let [client (d/client {:server-type :datomic-local :system system
                          :storage-dir (.getCanonicalPath (io/file storage-dir))})]
     (try
       (case mode
-        "bootstrap" (bootstrap client db-name)
+        "provision" (provision client db-name storage-dir paths)
         "serve" (let [conn (d/connect client {:db-name db-name})]
                   (doseq [line (line-seq (java.io.BufferedReader. *in*))]
                     (emit (try {:ok true :result (dispatch conn (read-edn line))}

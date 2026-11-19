@@ -15,6 +15,7 @@ with tempfile.TemporaryDirectory(prefix="connector-runtime-") as temporary:
     for line in (relocated / "SHA256SUMS").read_text().splitlines():
         digest, path = line.split("  ", 1)
         assert hashlib.sha256((relocated / path).read_bytes()).hexdigest() == digest, path
+    subprocess.run([sys.executable, str(root / "test/provision.py"), str(relocated / "run")], check=True, cwd=work)
     result = subprocess.run(
         [str(relocated / "run"), "serve", *sys.argv[1:]],
         input='{:op :hello}\n{:op :query :query [:find (count ?tx) :where [?tx :db/txInstant]]}\n',

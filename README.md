@@ -5,10 +5,9 @@ EDN over stdin/stdout, and uses the synchronous Datomic Client API. Datomic Loca
 stores the database on disk. No server, Scotty dependency or application schema
 exists in the connector.
 
-Verified on Intel macOS on 2026-10-14: `scripts/acceptance` exited successfully.
-The retained database is `data/first-contact/acceptance-20261014-183912-19764`;
-transaction `13194139533321`, timestamp `2026-10-14T16:39:30.814-00:00`, actor
-`79164837199951` and via `79164837199952` matched before and after process restart.
+Validated on Intel macOS with GHC 9.6.7 and Java 21. `scripts/acceptance` checks
+process restart, write attribution, scalar codecs, cancellation, runtime relocation,
+generic provisioning and refusal paths. Each run prints its retained database name.
 
 ## Setup and run (native macOS)
 
@@ -38,7 +37,7 @@ write without context that must fail to compile. Data is retained for inspection
 To use one named database manually:
 
 ```sh
-scripts/bridge bootstrap "$PWD/data" first-contact experiment
+scripts/bridge provision "$PWD/data" first-contact experiment experiment/schema.edn experiment/identities.edn
 cabal run --build-summary=.cache/cabal-build.log first-contact -- write "$PWD/data" first-contact experiment hello
 cabal run --build-summary=.cache/cabal-build.log first-contact -- read  "$PWD/data" first-contact experiment hello
 ```
@@ -112,10 +111,32 @@ Datomic supplies `:db/txInstant`. The caller cannot supply these three attribute
 or the transaction tempid. Context identifies responsibility; it authenticates
 nobody and does not restrict actors to Björn.
 
-Bootstrap is a separate process mode with two fixed experiment files. It creates
-the attribution/test schema and the Björn/application entities. Bootstrap
-transactions have no actor/via; there is no bootstrap operation or arbitrary
-unattributed transaction function in the Haskell API or serving protocol.
+Provisioning is a separate operational command, available through the installed
+CLI or the relocatable runtime:
+
+```sh
+datomic-bridge provision /absolute/data my-system my-db db/schema.edn db/identities.edn
+# Or install only the connector's attribution schema:
+datomic-bridge provision /absolute/data my-system empty-db
+```
+
+The connector installs only `:write/actor` and `:write/via`. Schema, identity names
+and seed data belong to the consuming project, supplied as explicit EDN transaction
+vector files, applied in order. Relative file and storage paths resolve against
+the caller's directory. For a writable project, include its initial actor and
+application entities in these files, then resolve their IDs with `pull`; the
+connector assumes no identity names or application-specific identity schema.
+All files are parsed and checked as vectors before database
+creation. A storage-directory file lock serializes connector provisioning commands.
+Provisioning refuses existing databases; subsequent schema/data changes
+use ordinary attributed transactions. Initial transactions are unattributed because
+the context entities do not exist yet. There is no provisioning operation or
+arbitrary unattributed transaction function in the serving protocol.
+
+Provisioning across multiple files is not atomic. If Datomic rejects a later file,
+earlier initial transactions remain in the newly created database; inspect that
+database and explicitly recover it rather than retrying provisioning blindly.
+The `experiment/` files are optional example inputs, absent from the bridge runtime.
 
 ## Observed limits
 

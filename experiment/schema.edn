@@ -1,8 +1,4 @@
-[{:db/ident :write/actor :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
-  :db/doc "Entity responsible for an ordinary connector transaction."}
- {:db/ident :write/via :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
-  :db/doc "Application entity through which the transaction was submitted."}
- {:db/ident :identity/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+[{:db/ident :identity/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
  {:db/ident :test/key :db/valueType :db.type/string :db/cardinality :db.cardinality/one
   :db/unique :db.unique/identity}
  {:db/ident :test/value :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]

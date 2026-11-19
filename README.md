@@ -256,6 +256,79 @@ are rejected without changing the connector. There is no time-based expiration.
 Keep scopes short to bound memory use. Concurrent reads and release are serialized.
 As with connector scopes, await child threads before leaving a scope.
 
+## Historical Snapshots (`as-of`)
+
+Historical snapshots use the same `Snapshot`, queries, pulls and exception-safe
+scope as current snapshots. The bridge captures a database value once, applies
+the native Datomic Client `as-of` filter, and retains that immutable view.
+
+```haskell
+data AsOf = AsOfBasis Basis | AsOfInstant UTCTime
+
+withSnapshotAsOf :: Connector -> AsOf -> (Snapshot -> IO a) -> IO a
+snapshotAsOf     :: Snapshot -> Maybe AsOf
+snapshotBasis    :: Snapshot -> Basis
+```
+
+Use the same application read function for both views:
+
+```haskell
+-- Domain code receives a Snapshot; selection stays outside it.
+readFacts snapshot = do
+  rows <- querySnapshot snapshot queryEDN inputs
+  entity <- pullSnapshot snapshot selectorEDN entityEDN
+  pure (rows, entity)
+
+-- Current view: persist this basis alongside the application's observation.
+(basis, factsNow) <- withSnapshot connector $ \snapshot -> do
+  facts <- readFacts snapshot
+  pure (snapshotBasis snapshot, facts)
+let Basis savedT = basis  -- store the integer with the originating database identity
+
+-- Later, even after corrections or retractions:
+factsThen <- withSnapshotAsOf connector (AsOfBasis (Basis savedT)) readFacts
+
+-- Application calculates local midnight using its own timezone, then supplies UTC.
+factsAtMidnight <- withSnapshotAsOf connector (AsOfInstant midnightUTC) readFacts
+```
+
+`snapshotBasis` is pure and always reports the **underlying captured database
+basis**, including on historical snapshots. It is not the historical cutoff.
+`snapshotAsOf` returns `Nothing` for a current view or the applied historical
+selector. For example, a view opened at basis 30 as of basis 10 reports
+`snapshotBasis == Basis 30` and `snapshotAsOf == Just (AsOfBasis (Basis 10))`.
+Persist a current snapshot's basis to reproduce the state observed then; retain
+the historical selector separately when recording an already historical view.
+A basis is Datomic's transaction `t`, not a transaction entity ID or a timestamp,
+and is meaningful only in its originating database.
+
+Basis selection includes the selected transaction and excludes later ones.
+An `as-of` view represents **what was known to the database at that point**,
+including facts subsequently corrected or retracted, rather than a retrospectively
+corrected view of the external world. Transaction-basis selection is more precise
+than wall-clock selection. `UTCTime` values are floored to milliseconds, including
+before the Unix epoch; `snapshotAsOf` exposes this normalized instant. The wire
+uses signed UTC epoch milliseconds, converted directly to `java.util.Date`,
+without the JVM's local timezone or date-string parsing. Leap seconds and instants
+outside Java Date's signed 64-bit millisecond range are rejected locally.
+
+Negative or oversized bases raise `LocalValidation`. Future bases raise
+`DatomicRejected`; unsupported instants retain native Datomic errors through the
+same exception type. Complete rejections leave the connector usable. Invalid
+requests never fall back to current data. Pre-creation cutoffs can yield empty
+views; a selector referring to schema absent in that view can itself fail.
+Missing entities follow ordinary Datomic query/pull semantics, so do not assume
+every absent pull returns the same shape. Protocol and subprocess failures use
+the existing connector error model.
+
+Historical reconstruction requires retained history. Attributes with
+`:db/noHistory true` do not guarantee their earlier values remain available;
+removed history cannot be recovered by this API. Persisting a basis is not an
+archive or backup. Snapshot scopes remain stable across later writes and do not
+create transactions or branches. See the [Client API](https://docs.datomic.com/client-api/datomic.client.api.html),
+[database filters](https://docs.datomic.com/reference/filters.html), and
+[schema history settings](https://docs.datomic.com/schema/schema-reference.html).
+
 See [the independent starter](starter/README.md) for a project-owned typed
 persistence module, explicit configuration, initialization and adoption guidance.
 

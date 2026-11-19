@@ -52,12 +52,31 @@
     (or (get @snapshots (:snapshot req)) (fail "Unknown or released snapshot"))
     (d/db conn)))
 
+(defn open-snapshot [conn snapshots req]
+  (let [db (d/db conn)
+        historical? (contains? req :as-of)
+        selector (:as-of req)
+        view (if historical?
+               (do
+                 (when-not (and (map? selector)
+                                (contains? #{#{:t} #{:instant}} (set (keys selector))))
+                   (fail "as-of requires exactly t or instant (UTC epoch milliseconds)"))
+                 (let [[kind point] (first selector)]
+                   (when-not (and (integer? point) (<= Long/MIN_VALUE point Long/MAX_VALUE))
+                     (fail "as-of point must be a signed 64-bit integer"))
+                   (when (and (= kind :t) (or (neg? point) (> point (:t db))))
+                     (fail "as-of basis must be between zero and the captured database basis"))
+                   (d/as-of db (if (= kind :instant) (java.util.Date. (long point)) (long point)))))
+               db)
+        token (str (java.util.UUID/randomUUID))]
+    (swap! snapshots assoc token view)
+    (cond-> {:snapshot token :t (:t db)}
+      historical? (assoc :as-of selector))))
+
 (defn dispatch [conn snapshots req]
   (case (:op req)
     :hello {:protocol 1 :version "0.1.0.0"}
-    :snapshot/open (let [db (d/db conn) token (str (java.util.UUID/randomUUID))]
-                     (swap! snapshots assoc token db)
-                     {:snapshot token :t (:t db)})
+    :snapshot/open (open-snapshot conn snapshots req)
     :snapshot/close (do (when-not (contains? @snapshots (:snapshot req))
                           (fail "Unknown or released snapshot"))
                         (swap! snapshots dissoc (:snapshot req))

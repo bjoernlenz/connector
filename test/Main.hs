@@ -9,6 +9,8 @@ import Datomic.EDN
 import Datomic.Report (decodeTransactionReport)
 import Datomic.Runtime (BridgeRuntime(..))
 import Data.List (isSuffixOf)
+import Data.Time (UTCTime(..), defaultTimeLocale, parseTimeM, addUTCTime, fromGregorian)
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import System.Environment (getArgs, getExecutablePath)
 import System.IO (hClose, hFlush, isEOF, openTempFile, stdout)
 import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, removeFile, removeDirectoryRecursive)
@@ -51,6 +53,8 @@ mock mode = case mode of
     hFlush stdout
     forever (getLine >> putStrLn "{:ok true :result :next}" >> hFlush stdout)
   "bad-report" -> getLine >> putStrLn "{:ok true :result {:t 1}}" >> hFlush stdout
+  "snapshots" -> snapshotMock 0
+  "bad-snapshot" -> getLine >> putStrLn "{:ok true :result {:snapshot \"token\" :t 10 :as-of {:t 9}}}" >> hFlush stdout
   "malformed" -> getLine >> putStrLn "garbage" >> hFlush stdout
   "bad-error" -> getLine >> putStrLn "{:ok false :error nil}" >> hFlush stdout
   "duplicate" -> getLine >> putStrLn "{:ok true :ok false :result nil}" >> hFlush stdout
@@ -68,6 +72,22 @@ mock mode = case mode of
     echoResponse line
   "echo-many" -> echoLoop
   _ -> pure ()
+
+-- Count retained handles so callback failure tests verify actual release requests.
+snapshotMock :: Integer -> IO ()
+snapshotMock retained = do
+  done <- isEOF
+  unless done $ do
+    req <- getLine >>= either fail pure . parseEDN
+    let (next, result) = case field "op" req of
+          Just (Keyword "snapshot/open") -> (retained + 1,
+            Map ([(Keyword "snapshot", StringEDN "token"), (Keyword "t", IntEDN 10)]
+              ++ maybe [] (\p -> [(Keyword "as-of", p)]) (field "as-of" req)))
+          Just (Keyword "snapshot/close") -> (retained - 1, Nil)
+          _ -> (retained, IntEDN retained)
+    putStrLn (renderEDN (Map [(Keyword "ok", Boolean True), (Keyword "result", result)]))
+    hFlush stdout
+    snapshotMock next
 
 echoResponse :: String -> IO ()
 echoResponse line = do
@@ -174,6 +194,7 @@ tests = do
   reportTests
   exe <- getExecutablePath
   concurrencyTests exe
+  snapshotTests exe
   let config mode = (defaultLocalConfig "." "test" "test") {bridgeRuntime = JavaClasspath exe mode}
   entered <- withLocalConnector (config "mock-ready") (const (pure True))
   check entered "Compatible bridge should enter caller scope"
@@ -288,6 +309,121 @@ scalarTests bridge storage system database = withConnector bridge ["serve", stor
   refused (pullSnapshot escaped (literal "[*]") eid)
   putStrLn "PASS: snapshot query/pull remain pinned while ordinary reads advance; released handle refused"
   putStrLn "PASS: Datomic scalar types round trip through transactions, pull and equality queries"
+  historicalTests c context
+
+snapshotTests :: FilePath -> IO ()
+snapshotTests exe = do
+  withConnector exe ["--mock", "snapshots"] $ \c -> do
+    mapM_ (\point -> do
+      result <- try (withSnapshotAsOf c point (const (pure ())))
+      check (case result of Left (LocalValidation _) -> True; _ -> False) "Invalid selector must fail locally")
+      [AsOfBasis (Basis (-1)), AsOfBasis (Basis 9223372036854775808),
+       AsOfInstant (UTCTime (fromGregorian 2026 1 1) 86400),
+       AsOfInstant (posixSecondsToUTCTime 9223372036854776)]
+    query c Nil [] >>= \n -> check (n == IntEDN 0) "Invalid selector sent a request"
+    withSnapshotAsOf c (AsOfInstant (posixSecondsToUTCTime (-0.0001))) $ \s ->
+      check (snapshotAsOf s == Just (AsOfInstant (posixSecondsToUTCTime (-0.001)))) "Negative epoch instant must floor"
+    escaped <- newEmptyMVar
+    result <- try (withSnapshotAsOf c (AsOfBasis (Basis 3)) $ \s -> do
+      putMVar escaped s
+      throwIO (LocalValidation "callback")) :: IO (Either ConnectorError ())
+    check (case result of Left (LocalValidation "callback") -> True; _ -> False) "Cleanup replaced callback exception"
+    takeMVar escaped >>= \s -> refused (pullSnapshot s Nil Nil)
+    query c Nil [] >>= \n -> check (n == IntEDN 0) "Callback exception leaked a snapshot token"
+    cancelled <- timeout 100000 (withSnapshotAsOf c (AsOfBasis (Basis 3)) (\_ -> threadDelay 1000000))
+    check (cancelled == Nothing) "Snapshot callback cancellation changed"
+    query c Nil [] >>= \n -> check (n == IntEDN 0) "Cancellation leaked a snapshot token"
+  withConnector exe ["--mock", "bad-snapshot"] $ \c -> do
+    result <- try (withSnapshotAsOf c (AsOfBasis (Basis 3)) (const (pure ())))
+    check (case result of Left (ProtocolFailure _) -> True; _ -> False) "Mismatched historical response accepted"
+    resultClosed <- try (query c Nil [])
+    check (case resultClosed of Left ConnectorClosed -> True; _ -> False) "Malformed snapshot must close connector"
+  putStrLn "PASS: snapshot selector validation, metadata, exception/cancellation release and malformed responses"
+
+historicalTests :: Connector -> WriteContext -> IO ()
+historicalTests c context = do
+  let literal = either error id . parseEDN
+      amount n = DecimalEDN n (-2)
+      entity report name = case lookup (StringTempId name) (transactionTempids report) of
+        Just (EntityId n) -> IntEDN n
+        _ -> error "Missing historical fixture tempid"
+      txInstant report = do
+        let EntityId tx = transactionEntity report
+        metadata <- pull c (literal "[:db/txInstant]") (IntEDN tx)
+        case field "db/txInstant" metadata of
+          Just (Tagged "inst" (StringEDN value)) ->
+            maybe (fail ("Invalid txInstant: " ++ value)) pure
+              (parseTimeM True defaultTimeLocale "%Y-%m-%dT%H:%M:%S%Q%Ez" value :: Maybe UTCTime)
+          _ -> fail "Missing historical fixture timestamp"
+  first <- transactReport c context (literal "[{:db/id \"historical\" :scalar/bigdec 1.11M :scalar/string \"original\"}]")
+  let eid = entity first "historical"
+      update n = transactReport c context (Vector [Vector [Keyword "db/add", eid, Keyword "scalar/bigdec", amount n]])
+      value s n = do
+        pulled <- pullSnapshot s (literal "[:scalar/bigdec]") eid
+        rows <- querySnapshot s (literal "[:find ?v :in $ ?e :where [?e :scalar/bigdec ?v]]") [eid]
+        check (field "scalar/bigdec" pulled == Just (amount n) && rows == Vector [Vector [amount n]])
+          ("Historical query/pull mismatch at " ++ show (snapshotAsOf s))
+  t1 <- withSnapshot c $ \s -> do
+    check (snapshotAsOf s == Nothing) "Current snapshot has historical cutoff"
+    value s 111
+    pure (snapshotBasis s)
+  instant1 <- txInstant first
+  threadDelay 20000
+  second <- transactReport c context (Vector
+    [Vector [Keyword "db/add", eid, Keyword "scalar/bigdec", amount 115],
+     Map [(Keyword "db/id", StringEDN "later"), (Keyword "scalar/bigdec", amount 200)]])
+  instant2 <- txInstant second
+  threadDelay 20000
+  third <- transactReport c context (Vector
+    [Vector [Keyword "db/add", eid, Keyword "scalar/bigdec", amount 110],
+     Vector [Keyword "db/retract", eid, Keyword "scalar/string", StringEDN "original"]])
+  let t2 = transactionBasis second
+      t3 = transactionBasis third
+      later = entity second "later"
+  check (t1 == transactionBasis first && t1 < t2 && t2 < t3 && instant1 < instant2) "Fixture ordering failed"
+  mapM_ (\(basis, expected) -> withSnapshotAsOf c (AsOfBasis basis) $ \s -> do
+    check (snapshotBasis s == t3 && snapshotAsOf s == Just (AsOfBasis basis)) "Captured basis confused with historical cutoff"
+    value s expected) [(t1,111), (t2,115), (t3,110)]
+  withSnapshot c (\s -> value s 110)
+  withSnapshotAsOf c (AsOfBasis t1) $ \s -> do
+    missing <- querySnapshot s (literal "[:find ?v :in $ ?e :where [?e :scalar/bigdec ?v]]") [later]
+    absent <- pullSnapshot s (literal "[:scalar/bigdec]") later
+    check (missing == Vector [] && field "scalar/bigdec" absent == Nothing) "Later entity present in historical view"
+    old <- pullSnapshot s (literal "[:scalar/string]") eid
+    check (field "scalar/string" old == Just (StringEDN "original")) "Retracted fact missing from history"
+    withSnapshotAsOf c (AsOfBasis t2) (\other -> value other 115)
+  withSnapshotAsOf c (AsOfInstant instant1) (\s -> value s 111)
+  withSnapshotAsOf c (AsOfInstant (addUTCTime 0.001 instant1)) (\s -> value s 111)
+  withSnapshotAsOf c (AsOfInstant instant2) (\s -> value s 115)
+  withSnapshotAsOf c (AsOfInstant (addUTCTime 0.0009 instant1)) $ \s -> do
+    check (snapshotAsOf s == Just (AsOfInstant instant1)) "UTC instant was not floored to milliseconds"
+    value s 111
+  mapM_ (\point -> withSnapshotAsOf c point $ \s -> do
+    rows <- querySnapshot s (literal "[:find ?e :where [?e :db/ident :write/actor]]") []
+    check (rows == Vector []) "Pre-creation view was not empty")
+    [AsOfBasis (Basis 0), AsOfInstant (posixSecondsToUTCTime 0)]
+  mapM_ (\point -> do
+    result <- try (withSnapshotAsOf c point (const (pure ())))
+    check (case result of Left (DatomicRejected _) -> True; _ -> False) "Future historical point should be rejected"
+    withSnapshot c (\s -> value s 110))
+    [AsOfBasis (let Basis n = t3 in Basis (n+1)), AsOfInstant (posixSecondsToUTCTime 4102444800)]
+  escaped <- withSnapshotAsOf c (AsOfBasis t1) $ \historical -> withSnapshot c $ \current -> do
+    _ <- update 109
+    value historical 111
+    value current 110
+    latest <- pull c (literal "[:scalar/bigdec]") eid
+    check (field "scalar/bigdec" latest == Just (amount 109)) "Ordinary reads did not advance"
+    pure historical
+  refused (querySnapshot escaped Nil [])
+  failedHandle <- newEmptyMVar
+  failed <- try (withSnapshotAsOf c (AsOfBasis t1) $ \s -> do
+    value s 111
+    putMVar failedHandle s
+    throwIO (LocalValidation "historical callback")) :: IO (Either ConnectorError ())
+  check (case failed of Left (LocalValidation "historical callback") -> True; _ -> False) "Historical callback exception replaced"
+  takeMVar failedHandle >>= \s -> refused (pullSnapshot s Nil eid)
+  withSnapshotAsOf c (AsOfBasis t2) (\s -> value s 115)
+  putStrLn "PASS: real historical basis/UTC query and pull, corrections/retractions, stability, metadata and refusal semantics"
 
 reportTests :: IO ()
 reportTests = do

@@ -2,7 +2,8 @@
 module Datomic.Connector
   (Connector, ConnectorError(..), EntityId(..), WriteContext(..), withConnector,
    LocalConfig(..), defaultLocalConfig, withLocalConnector, transact, transactReport, query, pull,
-   Snapshot, withSnapshot, snapshotBasis, querySnapshot, pullSnapshot,
+   Snapshot, AsOf(..), withSnapshot, withSnapshotAsOf, snapshotBasis, snapshotAsOf,
+   querySnapshot, pullSnapshot,
    Basis(..), TempId(..), Datom(..), TransactionReport(..)) where
 
 import Control.Concurrent.MVar
@@ -13,6 +14,8 @@ import Datomic.EDN
 import Datomic.Report
 import Datomic.Runtime
 import Data.Version (showVersion)
+import Data.Time.Clock (UTCTime(..))
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds, posixSecondsToUTCTime)
 import Paths_connector (version)
 import System.Directory (makeAbsolute)
 import System.Exit (ExitCode(..))
@@ -105,27 +108,71 @@ query c q inputs = request c [("op", Keyword "query"), ("query", q), ("args", Ve
 pull :: Connector -> EDN -> EDN -> IO EDN
 pull c selector eid = request c [("op", Keyword "pull"), ("selector", selector), ("eid", eid)]
 
--- | A handle owned by one connector and valid only inside withSnapshot.
-data Snapshot = Snapshot Connector String Basis (MVar Bool)
+-- | Historical cutoff, inclusive. Bases belong to their originating database.
+-- Instants are floored to Java Date's millisecond precision.
+data AsOf = AsOfBasis Basis | AsOfInstant UTCTime deriving (Eq, Show)
 
+-- | A handle owned by one connector and valid only inside its snapshot scope.
+data Snapshot = Snapshot Connector String Basis (Maybe AsOf) (MVar Bool)
+
+-- | Underlying captured database basis, not the historical cutoff.
 snapshotBasis :: Snapshot -> Basis
-snapshotBasis (Snapshot _ _ basis _) = basis
+snapshotBasis (Snapshot _ _ basis _ _) = basis
+
+-- | Applied historical selector (millisecond-normalized for instants).
+snapshotAsOf :: Snapshot -> Maybe AsOf
+snapshotAsOf (Snapshot _ _ _ point _) = point
 
 withSnapshot :: Connector -> (Snapshot -> IO a) -> IO a
-withSnapshot c action = mask $ \restore -> do
-  (token, basis) <- requestWith decode c [("op", Keyword "snapshot/open")]
-  alive <- newMVar True
-  let snapshot = Snapshot c token basis alive
-  result <- tryAny (restore (action snapshot))
-  cleanup <- tryAny $ modifyMVar_ alive $ \_ -> do
-    _ <- request c [("op", Keyword "snapshot/close"), ("snapshot", StringEDN token)]
-      `catch` \e -> case e of ConnectorClosed -> pure Nil; _ -> throwIO e
-    pure False
-  either throwIO (\value -> either throwIO (const (pure value)) cleanup) result
-  where
-    decode v = case (field "snapshot" v, field "t" v) of
-      (Just (StringEDN token), Just (IntEDN t)) | t >= 0 -> Right (token, Basis t)
-      _ -> Left "Malformed snapshot response"
+withSnapshot c = openSnapshot c Nothing
+
+withSnapshotAsOf :: Connector -> AsOf -> (Snapshot -> IO a) -> IO a
+withSnapshotAsOf c point = openSnapshot c (Just point)
+
+openSnapshot :: Connector -> Maybe AsOf -> (Snapshot -> IO a) -> IO a
+openSnapshot c requested action = do
+  selector <- either (throwIO . LocalValidation) pure (traverse encodeAsOf requested)
+  acquire selector
+ where
+  acquire selector = mask $ \restore -> do
+    (token, basis, point) <- requestWith (decode selector) c
+      ([("op", Keyword "snapshot/open")] ++ maybe [] (\v -> [("as-of", v)]) selector)
+    alive <- newMVar True
+    let snapshot = Snapshot c token basis point alive
+    result <- tryAny (restore (action snapshot))
+    cleanup <- tryAny $ modifyMVar_ alive $ \_ -> do
+      _ <- request c [("op", Keyword "snapshot/close"), ("snapshot", StringEDN token)]
+        `catch` \e -> case e of ConnectorClosed -> pure Nil; _ -> throwIO e
+      pure False
+    either throwIO (\value -> either throwIO (const (pure value)) cleanup) result
+  decode selector v = case (field "snapshot" v, field "t" v) of
+    (Just (StringEDN token), Just (IntEDN t)) | not (null token) && t >= 0 -> do
+      point <- traverse decodeAsOf (field "as-of" v)
+      if field "as-of" v == selector
+        && maybe True (\p -> case p of AsOfBasis (Basis n) -> n <= t; _ -> True) point
+        then Right (token, Basis t, point)
+        else Left "Snapshot selector mismatch"
+    _ -> Left "Malformed snapshot response"
+
+-- Epoch milliseconds avoid timezone, calendar and textual date parsing ambiguity.
+encodeAsOf :: AsOf -> Either String EDN
+encodeAsOf (AsOfBasis (Basis t))
+  | t >= 0 && t <= maxWireInteger = Right (Map [(Keyword "t", IntEDN t)])
+  | otherwise = Left "As-of basis must be a nonnegative signed 64-bit transaction basis"
+encodeAsOf (AsOfInstant instant)
+  | utctDayTime instant < 0 || utctDayTime instant >= 86400 = Left "As-of instant requires a UTC day time without leap seconds"
+  | millis < negate (maxWireInteger + 1) || millis > maxWireInteger = Left "As-of instant exceeds Java Date range"
+  | otherwise = Right (Map [(Keyword "instant", IntEDN millis)])
+  where millis = floor (toRational (utcTimeToPOSIXSeconds instant) * 1000)
+
+decodeAsOf :: EDN -> Either String AsOf
+decodeAsOf (Map [(Keyword "t", IntEDN t)]) | t >= 0 = Right (AsOfBasis (Basis t))
+decodeAsOf (Map [(Keyword "instant", IntEDN ms)]) =
+  Right (AsOfInstant (posixSecondsToUTCTime (fromRational (toRational ms / 1000))))
+decodeAsOf _ = Left "Malformed snapshot selector"
+
+maxWireInteger :: Integer
+maxWireInteger = 9223372036854775807
 
 querySnapshot :: Snapshot -> EDN -> [EDN] -> IO EDN
 querySnapshot snapshot q inputs = snapshotRequest snapshot
@@ -136,7 +183,7 @@ pullSnapshot snapshot selector eid = snapshotRequest snapshot
   [("op", Keyword "pull"), ("selector", selector), ("eid", eid)]
 
 snapshotRequest :: Snapshot -> [(String, EDN)] -> IO EDN
-snapshotRequest (Snapshot c token _ alive) entries = withMVar alive $ \open ->
+snapshotRequest (Snapshot c token _ _ alive) entries = withMVar alive $ \open ->
   if open then request c (("snapshot", StringEDN token) : entries)
   else throwIO (LocalValidation "Snapshot scope has ended")
 

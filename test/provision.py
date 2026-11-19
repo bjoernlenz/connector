@@ -41,6 +41,20 @@ with tempfile.TemporaryDirectory(prefix="connector-provision-") as temporary:
             process.stdin.write(request + "\n")
             process.stdin.flush()
             return process.stdout.readline()
+        for selector in ('nil', '{}', '{:t -1}', '{:t 9223372036854775808N}',
+                         '{:t 999999999}', '{:instant "not-a-date"}',
+                         '{:instant #inst "2026-01-01"}',
+                         '{:instant 9223372036854775808N}', '{:t 0 :instant 0}'):
+            rejected = exchange('{:op :snapshot/open :as-of ' + selector + '}')
+            assert ':ok false' in rejected, (selector, rejected)
+            assert ':ok true' in exchange('{:op :hello}'), "Rejection poisoned bridge"
+        for selector in ('{:t 0}', '{:instant 0}'):
+            historical = exchange('{:op :snapshot/open :as-of ' + selector + '}')
+            assert ':ok true' in historical and ':as-of ' in historical, historical
+            token = re.search(r':snapshot "([^"\n]+)"', historical).group(1)
+            empty = exchange('{:op :query :snapshot "' + token + '" :query [:find ?e :where [?e :db/ident :write/actor]]}')
+            assert ':result []' in empty, empty
+            assert ':ok true' in exchange('{:op :snapshot/close :snapshot "' + token + '"}')
         opened = exchange('{:op :snapshot/open}')
         token = re.search(r':snapshot "([^"\n]+)"', opened).group(1)
         assert ':ok true' in exchange('{:op :snapshot/close :snapshot "' + token + '"}')

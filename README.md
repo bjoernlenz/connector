@@ -197,3 +197,18 @@ connector failures must catch `ConnectorError` instead. Unrelated filesystem IO 
 still throw `IOException`. Asynchronous exceptions are rethrown unchanged, including
 during writes: cancellation remains recognizable and may also leave a committed
 write. Cleanup preserves the original exception. There are no automatic retries.
+
+## Transaction reports
+
+`transactReport :: Connector -> WriteContext -> EDN -> IO TransactionReport`
+returns `transactionBasis :: Basis`, `transactionEntity :: EntityId`,
+`transactionTempids :: [(TempId, EntityId)]` and `transactionDatoms :: [Datom]`.
+A datom has typed entity/attribute/transaction IDs, an added flag and a lossless
+EDN value (including tagged float32, decimal, bigint and tuple values). Resolve a
+named tempid with `lookup (StringTempId "item") (transactionTempids report)`.
+`Datomic.Report` also exports the pure `decodeTransactionReport` validator.
+
+The existing `transact :: ... -> IO EDN` is retained for callers using raw EDN;
+it now validates the same report before returning the original EDN. Migrate by
+switching to `transactReport` and the record accessors. Invalid success reports
+close the connector and raise `WriteOutcomeUnknown`; do not retry automatically.

@@ -5,6 +5,7 @@ import Control.Exception (try)
 import Control.Monad (unless, forever)
 import Datomic.Connector
 import Datomic.EDN
+import Datomic.Report (decodeTransactionReport)
 import Datomic.Runtime (BridgeRuntime(..))
 import Data.List (isSuffixOf)
 import System.Environment (getArgs, getExecutablePath)
@@ -40,6 +41,7 @@ mock mode = case mode of
     putStrLn "{:ok true :result :abandoned}"
     hFlush stdout
     forever (getLine >> putStrLn "{:ok true :result :next}" >> hFlush stdout)
+  "bad-report" -> getLine >> putStrLn "{:ok true :result {:t 1}}" >> hFlush stdout
   "malformed" -> getLine >> putStrLn "garbage" >> hFlush stdout
   "reject" -> do
     _ <- getLine
@@ -58,6 +60,7 @@ mock mode = case mode of
 tests :: IO ()
 tests = do
   ednTests
+  reportTests
   exe <- getExecutablePath
   let config mode = (defaultLocalConfig "." "test" "test") {bridgeRuntime = JavaClasspath exe mode}
   entered <- withLocalConnector (config "mock-ready") (const (pure True))
@@ -71,11 +74,11 @@ tests = do
   mapM_ (\mode -> withConnector exe ["--mock", mode] $ \c -> do
     refused (query c Nil [])
     refused (query c Nil [])) ["malformed", "exit"]
-  withConnector exe ["--mock", "malformed"] $ \c -> do
+  mapM_ (\mode -> withConnector exe ["--mock", mode] $ \c -> do
     result <- try (transact c (WriteContext (EntityId 1) (EntityId 2)) (Vector []))
     check (case result of Left (WriteOutcomeUnknown _) -> True; _ -> False) "Lost write must report unknown outcome"
     result2 <- try (query c Nil [])
-    check (case result2 of Left ConnectorClosed -> True; _ -> False) "Failed exchange must close connector"
+    check (case result2 of Left ConnectorClosed -> True; _ -> False) "Failed exchange must close connector") ["malformed", "bad-report"]
   withConnector exe ["--mock", "slow"] $ \c -> do
     cancelled <- timeout 100000 (transact c (WriteContext (EntityId 1) (EntityId 2)) (Vector []))
     check (cancelled == Nothing) "Write cancellation must retain timeout semantics"
@@ -138,8 +141,12 @@ scalarTests bridge storage system database = withConnector bridge ["serve", stor
                               (Keyword "db/cardinality", Keyword "db.cardinality/one")]
                               ++ [(Keyword "db/tupleType", Keyword "db.type/long") | kind == "tuple"])
   _ <- transact c context (Vector (map schema values))
-  report <- transact c context (Vector [Map ((Keyword "db/id", StringEDN "sample") : [(attr kind, value) | (kind,value) <- values])])
-  let eid = case field "tempids" report of Just (Map ids) -> maybe Nil id (lookup (StringEDN "sample") ids); _ -> Nil
+  report <- transactReport c context (Vector [Map ((Keyword "db/id", StringEDN "sample") : [(attr kind, value) | (kind,value) <- values])])
+  let eid = case lookup (StringTempId "sample") (transactionTempids report) of Just (EntityId n) -> IntEDN n; _ -> Nil
+  check (transactionBasis report > Basis 0 && not (null (transactionDatoms report))) "Missing typed report basis/datoms"
+  let EntityId txid = transactionEntity report
+  metadata <- pull c (literal "[{:write/actor [:db/id]} {:write/via [:db/id]} :db/txInstant]") (IntEDN txid)
+  check ((field "write/actor" metadata >>= field "db/id") == field "db/id" a) "Report metadata actor mismatch"
   result <- pull c (literal "[*]") eid
   mapM_ (\(kind, expected) -> do
     let actual = field ("scalar/" ++ kind) result
@@ -149,4 +156,17 @@ scalarTests bridge storage system database = withConnector bridge ["serve", stor
     rows <- query c (literal "[:find ?e :in $ ?attribute ?value :where [?e ?attribute ?value]]") [attr kind, value]
     check (case rows of Vector found -> Vector [eid] `elem` found; _ -> False)
       ("Scalar cannot be reused as an equality query input: " ++ kind ++ " in " ++ show rows)) values
+  rejection <- try (transactReport c context (literal "[[:db/add 1 :missing/attribute 42]]"))
+  check (case rejection of Left (DatomicRejected e) -> field "data" e /= Nothing; _ -> False) "Datomic rejection must retain exception data"
+  _ <- query c (literal "[:find ?e :where [?e :db/ident :write/actor]]") []
   putStrLn "PASS: Datomic scalar types round trip through transactions, pull and equality queries"
+
+reportTests :: IO ()
+reportTests = do
+  let decode = decodeTransactionReport . either error id . parseEDN
+      good = "{:t 1 :tx 100 :tempids {\"x\" 200} :tx-data [[200 10 #connector/float \"0.1\" 100 true]]}"
+  check (case decode good of Right r -> transactionBasis r == Basis 1 && map datomValue (transactionDatoms r) == [Tagged "connector/float" (StringEDN "0.1")]; _ -> False) "Report scalar lost"
+  mapM_ (\text -> check (case decode text of Left _ -> True; _ -> False) "Accepted malformed report")
+    ["nil", "{:t 1}", "{:t -1 :tx 100 :tempids {} :tx-data []}",
+     "{:t 1 :tx 100 :tempids {} :tx-data [[2 3 4 101 true]]}",
+     "{:t 1 :tx 100 :tempids {} :tx-data [[2 3 4 100 1]]}"]

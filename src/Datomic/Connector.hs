@@ -1,13 +1,15 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 module Datomic.Connector
   (Connector, ConnectorError(..), EntityId(..), WriteContext(..), withConnector,
-   LocalConfig(..), defaultLocalConfig, withLocalConnector, transact, query, pull) where
+   LocalConfig(..), defaultLocalConfig, withLocalConnector, transact, transactReport, query, pull,
+   Basis(..), TempId(..), Datom(..), TransactionReport(..)) where
 
 import Control.Concurrent.MVar
 import Control.Exception (SomeException, SomeAsyncException, IOException, mask, try, throwIO, catch, toException, fromException)
 import Control.Monad (void)
 import Datomic.Error
 import Datomic.EDN
+import Datomic.Report
 import Datomic.Runtime
 import Data.Version (showVersion)
 import Paths_connector (version)
@@ -17,7 +19,6 @@ import System.IO
 import System.Process hiding (system)
 import System.Timeout (timeout)
 
-newtype EntityId = EntityId Integer deriving (Eq, Show)
 data WriteContext = WriteContext { actor :: EntityId, via :: EntityId } deriving (Eq, Show)
 -- A failed exchange permanently closes the protocol: its reply may still arrive.
 data Connector = Connector Handle Handle ProcessHandle (MVar Bool)
@@ -84,9 +85,15 @@ withConnectorProcess launch action = mask $ \restore -> do
         _ -> pure ()
 
 transact :: Connector -> WriteContext -> EDN -> IO EDN
-transact c (WriteContext (EntityId a) (EntityId v)) tx
+transact c context tx = transactWith (\v -> decodeTransactionReport v >> Right v) c context tx
+
+transactReport :: Connector -> WriteContext -> EDN -> IO TransactionReport
+transactReport = transactWith decodeTransactionReport
+
+transactWith :: (EDN -> Either String a) -> Connector -> WriteContext -> EDN -> IO a
+transactWith decode c (WriteContext (EntityId a) (EntityId v)) tx
   | a <= 0 || v <= 0 = throwIO (LocalValidation "WriteContext requires positive entity IDs")
-  | otherwise = request c
+  | otherwise = requestWith decode c
       [("op", Keyword "transact"), ("context", Map [(Keyword "actor", IntEDN a), (Keyword "via", IntEDN v)]),
        ("tx-data", tx)]
 
@@ -99,7 +106,10 @@ pull c selector eid = request c [("op", Keyword "pull"), ("selector", selector),
 
 -- Private: callers cannot send arbitrary protocol operations or omit context.
 request :: Connector -> [(String, EDN)] -> IO EDN
-request (Connector input output process lock) entries = do
+request = requestWith Right
+
+requestWith :: (EDN -> Either String a) -> Connector -> [(String, EDN)] -> IO a
+requestWith decode (Connector input output process lock) entries = do
   -- Validate the entire value before writing even one byte to the stream.
   encoded <- either (throwIO . LocalValidation) pure (encodeEDN (Map [(Keyword k,v) | (k,v) <- entries]))
   exchange encoded
@@ -113,7 +123,7 @@ request (Connector input output process lock) entries = do
           line <- hGetLine output
           response <- either (throwIO . ProtocolFailure) pure (parseEDN line)
           case field "ok" response of
-            Just (Boolean True) -> maybe (throwIO (ProtocolFailure "Bridge response lacks result")) (pure . Right) (field "result" response)
+            Just (Boolean True) -> maybe (throwIO (ProtocolFailure "Bridge response lacks result")) (fmap Right . either (throwIO . ProtocolFailure) pure . decode) (field "result" response)
             Just (Boolean False) | Just err <- field "error" response -> pure (Left (DatomicRejected err))
             _ -> throwIO (ProtocolFailure "Malformed bridge response")
         case result of

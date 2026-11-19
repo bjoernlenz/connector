@@ -18,6 +18,13 @@ extra-source-files:
   scripts/package-runtime
   test/runtime.py
   test/provision.py
+  starter/connector-starter.cabal
+  starter/cabal.project
+  starter/README.md
+  starter/db/*.edn
+  starter/src/Starter/*.hs
+  starter/app/Main.hs
+  starter/test/Main.hs
 
 data-files:
   deps.edn

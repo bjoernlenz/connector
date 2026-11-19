@@ -231,3 +231,6 @@ Bridge shutdown releases all retained values; unknown/released protocol tokens
 are rejected without changing the connector. There is no time-based expiration.
 Keep scopes short to bound memory use. Concurrent reads and release are serialized.
 As with connector scopes, await child threads before leaving a scope.
+
+See [the independent starter](starter/README.md) for a project-owned typed
+persistence module, explicit configuration, initialization and adoption guidance.

@@ -1,0 +1,33 @@
+cabal-version: 3.0
+name: connector-starter
+version: 0.1.0.0
+build-type: Simple
+synopsis: Project-owned persistence example for Datomic Local
+license: 0BSD
+extra-source-files: README.md
+data-files: db/schema.edn, db/identities.edn
+
+library
+  exposed-modules: Starter.Config, Starter.Persistence
+  other-modules: Paths_connector_starter
+  autogen-modules: Paths_connector_starter
+  hs-source-dirs: src
+  build-depends: base >=4.18 && <5, connector >=0.1 && <0.2, process >=1.6 && <1.7, directory >=1.3 && <1.4
+  default-language: Haskell2010
+  ghc-options: -Wall
+
+executable starter
+  main-is: Main.hs
+  hs-source-dirs: app
+  build-depends: base >=4.18 && <5, connector >=0.1 && <0.2, connector-starter
+  default-language: Haskell2010
+  ghc-options: -Wall -threaded
+
+test-suite starter-integration
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  hs-source-dirs: test
+  build-depends: base >=4.18 && <5, connector >=0.1 && <0.2, connector-starter,
+    directory >=1.3 && <1.4
+  default-language: Haskell2010
+  ghc-options: -Wall -threaded

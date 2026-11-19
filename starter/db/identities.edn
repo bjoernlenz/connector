@@ -1,2 +1,3 @@
 [{:db/ident :project/actor :project/name "Initial operator"}
- {:db/ident :project/application :project/name "Notes application"}]
+ {:db/ident :project/application :project/name "Notes application"}
+ {:db/ident :project/migrations :migration/revision 0}]

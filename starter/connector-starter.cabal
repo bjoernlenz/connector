@@ -4,15 +4,16 @@ version: 0.1.0.0
 build-type: Simple
 synopsis: Project-owned persistence example for Datomic Local
 license: 0BSD
-extra-source-files: README.md
+extra-source-files: README.md, migrations/*.edn
 data-files: db/schema.edn, db/identities.edn
 
 library
-  exposed-modules: Starter.Config, Starter.Persistence
+  exposed-modules: Starter.Config, Starter.Persistence, Starter.Migrations
   other-modules: Paths_connector_starter
   autogen-modules: Paths_connector_starter
   hs-source-dirs: src
-  build-depends: base >=4.18 && <5, connector >=0.1 && <0.2, process >=1.6 && <1.7, directory >=1.3 && <1.4
+  build-depends: bytestring >=0.11 && <0.13, text >=2.0 && <2.2, cryptohash-sha256 >=0.11 && <0.12,
+    base >=4.18 && <5, connector >=0.1 && <0.2, process >=1.6 && <1.7, directory >=1.3 && <1.4
   default-language: Haskell2010
   ghc-options: -Wall
 

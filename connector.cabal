@@ -22,6 +22,7 @@ extra-source-files:
   starter/cabal.project
   starter/README.md
   starter/db/*.edn
+  starter/migrations/*.edn
   starter/src/Starter/*.hs
   starter/app/Main.hs
   starter/test/Main.hs

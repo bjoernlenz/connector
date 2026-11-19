@@ -1,0 +1,1 @@
+[{:db/ident :note/category :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]

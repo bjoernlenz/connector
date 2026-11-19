@@ -2,6 +2,7 @@
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.walk :as walk]
+            [clojure.string :as str]
             [datomic.client.api :as d]
             [datomic.local :as local]))
 
@@ -90,10 +91,16 @@
   {:ok false :error {:class (.getName (class e)) :message (.getMessage e)
                     :data (ex-data e)}})
 
+;; Clojure's printer leaves some ISO controls literal inside strings. Escape
+;; them after printing so every response remains strict, single-line EDN.
+(def control-escapes
+  (into {} (for [n (concat (range 32) (range 127 160))]
+             [(char n) (format "\\u%04x" n)])))
+
 (defn emit [v]
   (binding [*print-length* nil *print-level* nil *print-namespace-maps* false]
     ;; URI and byte[] do not have readable EDN representations in Clojure.
-    (prn (walk/postwalk
+    (println (str/escape (pr-str (walk/postwalk
            (fn [x]
              (cond
                (instance? java.math.BigInteger x) (bigint x)
@@ -102,7 +109,7 @@
                (instance? Float x) (tagged-literal 'connector/float (Float/toString x))
                (instance? java.net.URI x) (tagged-literal 'connector/uri (str x))
                (bytes? x) (tagged-literal 'connector/bytes (.encodeToString (java.util.Base64/getEncoder) x))
-               :else x)) v))
+               :else x)) v)) control-escapes))
     (flush)))
 
 (defn provision [client db-name storage-dir paths]

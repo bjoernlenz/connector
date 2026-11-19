@@ -265,7 +265,7 @@ scalarTests bridge storage system database = withConnector bridge ["serve", stor
       values = [("long", IntEDN (-42)), ("bigint", BigIntEDN (-99999999999999999999999)),
                 ("double", FloatEDN (-1.25)), ("float", Tagged "connector/float" (StringEDN "0.1")),
                 ("bigdec", DecimalEDN (-12500) (-4)), ("boolean", Boolean True),
-                ("string", StringEDN "Björn\n\x1f600"), ("keyword", Keyword "sample/value"),
+                ("string", StringEDN ("Björn\n\x1f600" ++ map toEnum ([0..31] ++ [127..159]))), ("keyword", Keyword "sample/value"),
                 ("uuid", Tagged "uuid" (StringEDN "550e8400-e29b-41d4-a716-446655440000")),
                 ("instant", Tagged "inst" (StringEDN "2026-01-01T00:00:00.000-00:00")),
                 ("uri", Tagged "connector/uri" (StringEDN "https://example.org/a?b=c")),
@@ -281,6 +281,7 @@ scalarTests bridge storage system database = withConnector bridge ["serve", stor
   report <- transactReport c context (Vector [Map ((Keyword "db/id", StringEDN "sample") : [(attr kind, value) | (kind,value) <- values])])
   let eid = case lookup (StringTempId "sample") (transactionTempids report) of Just (EntityId n) -> IntEDN n; _ -> Nil
   check (transactionBasis report > Basis 0 && not (null (transactionDatoms report))) "Missing typed report basis/datoms"
+  check (lookup "string" values `elem` map (Just . datomValue) (transactionDatoms report)) "Control characters lost in transaction report"
   let EntityId txid = transactionEntity report
   metadata <- pull c (literal "[{:write/actor [:db/id]} {:write/via [:db/id]} :db/txInstant]") (IntEDN txid)
   check ((field "write/actor" metadata >>= field "db/id") == field "db/id" a) "Report metadata actor mismatch"

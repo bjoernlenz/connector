@@ -3,7 +3,15 @@ name: connector-starter
 version: 0.1.0.0
 build-type: Simple
 synopsis: Project-owned persistence example for Datomic Local
+description:
+  An independent example application using the Datomic Local connector.
+  Owns its configuration, schema, identities, typed persistence module and
+  attributed migration runner with atomic concurrent application.
+category: Database
 license: 0BSD
+license-file: LICENSE
+tested-with: GHC ==9.6.7
+
 extra-source-files: README.md, migrations/*.edn
 data-files: db/schema.edn, db/identities.edn
 
@@ -20,7 +28,7 @@ library
 executable starter
   main-is: Main.hs
   hs-source-dirs: app
-  build-depends: base >=4.18 && <5, connector >=0.1 && <0.2, connector-starter
+  build-depends: base >=4.18 && <5, connector >=0.1 && <0.2, connector-starter >=0.1 && <0.2
   default-language: Haskell2010
   ghc-options: -Wall -threaded
 
@@ -28,7 +36,12 @@ test-suite starter-integration
   type: exitcode-stdio-1.0
   main-is: Main.hs
   hs-source-dirs: test
-  build-depends: base >=4.18 && <5, connector >=0.1 && <0.2, connector-starter,
+  build-depends: base >=4.18 && <5, connector >=0.1 && <0.2, connector-starter >=0.1 && <0.2,
     directory >=1.3 && <1.4
   default-language: Haskell2010
   ghc-options: -Wall -threaded
+
+source-repository head
+  type: git
+  location: https://github.com/bjoernlenz/connector.git
+  subdir: starter

@@ -1,4 +1,4 @@
-# Haskell ↔ Datomic: first contact
+# Haskell ↔ Datomic Local connector
 
 A small Haskell library starts a Clojure/JVM subprocess, exchanges newline-delimited
 EDN over stdin/stdout, and uses the synchronous Datomic Client API. Datomic Local
@@ -234,3 +234,11 @@ As with connector scopes, await child threads before leaving a scope.
 
 See [the independent starter](starter/README.md) for a project-owned typed
 persistence module, explicit configuration, initialization and adoption guidance.
+
+## Distribution metadata
+
+The connector and starter use the BSD Zero Clause license (`0BSD`); see LICENSE.
+Source information follows this repository's configured GitHub remote. GHC 9.6.7
+is the tested compiler. Maintainer identity is intentionally unspecified; `cabal
+check` reports only the corresponding `no-maintainer` warning. No other compiler
+or platform result is implied by the CI matrix until that job actually passes.

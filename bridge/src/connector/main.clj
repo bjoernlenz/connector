@@ -47,12 +47,24 @@
                                                     :write/actor (:actor context)
                                                     :write/via (:via context)})}))))
 
-(defn dispatch [conn req]
+(defn read-db [conn snapshots req]
+  (if (contains? req :snapshot)
+    (or (get @snapshots (:snapshot req)) (fail "Unknown or released snapshot"))
+    (d/db conn)))
+
+(defn dispatch [conn snapshots req]
   (case (:op req)
     :hello {:protocol 1 :version "0.1.0.0"}
+    :snapshot/open (let [db (d/db conn) token (str (java.util.UUID/randomUUID))]
+                     (swap! snapshots assoc token db)
+                     {:snapshot token :t (:t db)})
+    :snapshot/close (do (when-not (contains? @snapshots (:snapshot req))
+                          (fail "Unknown or released snapshot"))
+                        (swap! snapshots dissoc (:snapshot req))
+                        nil)
     :transact (attributed-transact conn req)
-    :query (d/q {:query (:query req) :args (into [(d/db conn)] (:args req))})
-    :pull (d/pull (d/db conn) {:selector (:selector req) :eid (:eid req)})
+    :query (d/q {:query (:query req) :args (into [(read-db conn snapshots req)] (:args req))})
+    :pull (d/pull (read-db conn snapshots req) {:selector (:selector req) :eid (:eid req)})
     (fail "Unknown operation (provisioning is a separate process mode)")))
 
 (defn error-response [e]
@@ -110,9 +122,10 @@
     (try
       (case mode
         "provision" (provision client db-name storage-dir paths)
-        "serve" (let [conn (d/connect client {:db-name db-name})]
+        "serve" (let [conn (d/connect client {:db-name db-name})
+                      snapshots (atom {})]
                   (doseq [line (line-seq (java.io.BufferedReader. *in*))]
-                    (emit (try {:ok true :result (dispatch conn (read-edn line))}
+                    (emit (try {:ok true :result (dispatch conn snapshots (read-edn line))}
                                (catch Exception e (error-response e)))))))
       (finally
         (local/release-db {:system system :db-name db-name})

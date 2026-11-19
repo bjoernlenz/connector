@@ -31,6 +31,9 @@ with tempfile.TemporaryDirectory(prefix="connector-provision-") as temporary:
 {:op :pull :selector [:db/ident :db/valueType] :eid :write/actor}
 {:op :query :query [:find (count ?tx) :where [?tx :db/txInstant]]}
 '''
+    invalid = run("serve", "custom", request='{:op :pull :snapshot "missing" :selector [:db/id] :eid :write/actor}\n' + checks).splitlines()
+    assert ':ok false' in invalid[0] and 'Unknown or released snapshot' in invalid[0], invalid
+    assert all(line.startswith("{:ok true,") for line in invalid[1:]), invalid
     before = run("serve", "custom", request=checks).splitlines()
     assert all(line.startswith("{:ok true,") for line in before), before
     assert '"Alice"' in before[0] and '"Project"' in before[0], before

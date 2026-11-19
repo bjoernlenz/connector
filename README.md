@@ -100,8 +100,7 @@ environment, the development cache, or finally Clojure's dependency resolver.
 See `experiment/Main.hs` for a complete caller. The EDN values are Datomic
 transaction maps/vectors, Datalog queries, selectors and entity IDs/lookup refs.
 `query` supplies the current database as the first input (`$`); additional inputs
-are supplied by Haskell. Each call reads the current database, not a pinned
-snapshot. Transaction reports contain `:t`, `:tx`, `:tempids` and datom vectors
+are supplied by Haskell. Ordinary reads use the latest database; `withSnapshot` pins a basis (see below). Transaction reports contain `:t`, `:tx`, `:tempids` and datom vectors
 `[e a v tx added]`; live JVM database objects stay inside the bridge.
 
 Haskell requires context at the type level. The bridge also checks that both
@@ -212,3 +211,23 @@ The existing `transact :: ... -> IO EDN` is retained for callers using raw EDN;
 it now validates the same report before returning the original EDN. Migrate by
 switching to `transactReport` and the record accessors. Invalid success reports
 close the connector and raise `WriteOutcomeUnknown`; do not retry automatically.
+
+## Consistent read scopes
+
+```haskell
+withSnapshot connector $ \snapshot -> do
+  rows <- querySnapshot snapshot queryEDN inputs
+  entity <- pullSnapshot snapshot selectorEDN entityEDN
+  pure (rows, entity, snapshotBasis snapshot)
+```
+
+Each snapshot retains one immutable Datomic database value inside its owning JVM.
+It observes the basis captured at acquisition while ordinary `query`/`pull` and
+writes keep advancing. Multiple snapshots may coexist. The handle carries its
+connector, so it cannot accidentally be sent to another connector. Use it only
+inside `withSnapshot`: scope exit releases it, including on exceptions; escaped
+handles fail with `LocalValidation`. A closed connector raises `ConnectorClosed`.
+Bridge shutdown releases all retained values; unknown/released protocol tokens
+are rejected without changing the connector. There is no time-based expiration.
+Keep scopes short to bound memory use. Concurrent reads and release are serialized.
+As with connector scopes, await child threads before leaving a scope.

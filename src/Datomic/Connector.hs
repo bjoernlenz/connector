@@ -2,6 +2,7 @@
 module Datomic.Connector
   (Connector, ConnectorError(..), EntityId(..), WriteContext(..), withConnector,
    LocalConfig(..), defaultLocalConfig, withLocalConnector, transact, transactReport, query, pull,
+   Snapshot, withSnapshot, snapshotBasis, querySnapshot, pullSnapshot,
    Basis(..), TempId(..), Datom(..), TransactionReport(..)) where
 
 import Control.Concurrent.MVar
@@ -103,6 +104,41 @@ query c q inputs = request c [("op", Keyword "query"), ("query", q), ("args", Ve
 
 pull :: Connector -> EDN -> EDN -> IO EDN
 pull c selector eid = request c [("op", Keyword "pull"), ("selector", selector), ("eid", eid)]
+
+-- | A handle owned by one connector and valid only inside withSnapshot.
+data Snapshot = Snapshot Connector String Basis (MVar Bool)
+
+snapshotBasis :: Snapshot -> Basis
+snapshotBasis (Snapshot _ _ basis _) = basis
+
+withSnapshot :: Connector -> (Snapshot -> IO a) -> IO a
+withSnapshot c action = mask $ \restore -> do
+  (token, basis) <- requestWith decode c [("op", Keyword "snapshot/open")]
+  alive <- newMVar True
+  let snapshot = Snapshot c token basis alive
+  result <- tryAny (restore (action snapshot))
+  cleanup <- tryAny $ modifyMVar_ alive $ \_ -> do
+    _ <- request c [("op", Keyword "snapshot/close"), ("snapshot", StringEDN token)]
+      `catch` \e -> case e of ConnectorClosed -> pure Nil; _ -> throwIO e
+    pure False
+  either throwIO (\value -> either throwIO (const (pure value)) cleanup) result
+  where
+    decode v = case (field "snapshot" v, field "t" v) of
+      (Just (StringEDN token), Just (IntEDN t)) | t >= 0 -> Right (token, Basis t)
+      _ -> Left "Malformed snapshot response"
+
+querySnapshot :: Snapshot -> EDN -> [EDN] -> IO EDN
+querySnapshot snapshot q inputs = snapshotRequest snapshot
+  [("op", Keyword "query"), ("query", q), ("args", Vector inputs)]
+
+pullSnapshot :: Snapshot -> EDN -> EDN -> IO EDN
+pullSnapshot snapshot selector eid = snapshotRequest snapshot
+  [("op", Keyword "pull"), ("selector", selector), ("eid", eid)]
+
+snapshotRequest :: Snapshot -> [(String, EDN)] -> IO EDN
+snapshotRequest (Snapshot c token _ alive) entries = withMVar alive $ \open ->
+  if open then request c (("snapshot", StringEDN token) : entries)
+  else throwIO (LocalValidation "Snapshot scope has ended")
 
 -- Private: callers cannot send arbitrary protocol operations or omit context.
 request :: Connector -> [(String, EDN)] -> IO EDN

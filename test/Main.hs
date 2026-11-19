@@ -159,6 +159,18 @@ scalarTests bridge storage system database = withConnector bridge ["serve", stor
   rejection <- try (transactReport c context (literal "[[:db/add 1 :missing/attribute 42]]"))
   check (case rejection of Left (DatomicRejected e) -> field "data" e /= Nothing; _ -> False) "Datomic rejection must retain exception data"
   _ <- query c (literal "[:find ?e :where [?e :db/ident :write/actor]]") []
+  escaped <- withSnapshot c $ \snapshot -> do
+    before <- pullSnapshot snapshot (literal "[:scalar/string]") eid
+    changed <- transactReport c context (Vector [Vector [Keyword "db/add", eid, attr "string", StringEDN "changed"]])
+    check (transactionBasis changed > snapshotBasis snapshot) "Snapshot basis must precede write"
+    latest <- pull c (literal "[:scalar/string]") eid
+    pinned <- pullSnapshot snapshot (literal "[:scalar/string]") eid
+    rows <- querySnapshot snapshot (literal "[:find ?s :in $ ?e :where [?e :scalar/string ?s]]") [eid]
+    check (before == pinned && latest /= pinned) "Snapshot changed after write"
+    check (rows == Vector [Vector [maybe Nil id (field "scalar/string" before)]]) "Snapshot query differs from pull"
+    pure snapshot
+  refused (pullSnapshot escaped (literal "[*]") eid)
+  putStrLn "PASS: snapshot query/pull remain pinned while ordinary reads advance; released handle refused"
   putStrLn "PASS: Datomic scalar types round trip through transactions, pull and equality queries"
 
 reportTests :: IO ()

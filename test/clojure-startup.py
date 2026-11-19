@@ -40,7 +40,7 @@ else:
     env["JAVA_TOOL_OPTIONS"] = env.get("JAVA_TOOL_OPTIONS", "") + (
         " -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=9"
         " -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=9")
-    args = ["-M", "-m", "connector.main"]
+    args = ["-M", "-m", "connector.main", str(root / "connector.cabal")]
     storage = str(state / "data")
     run(args + ["provision", storage, "clean-cli", "test"])
     result = run(args + ["serve", storage, "clean-cli", "test"],

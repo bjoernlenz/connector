@@ -27,7 +27,10 @@ bridgeRuntimeFromEnvironment = do
 bridgeProcess :: BridgeRuntime -> [String] -> IO CreateProcess
 bridgeProcess runtime args = do
   source <- getDataFileName "bridge/src"
-  let mainArgs = ["-m", "connector.main"] ++ args
+  -- The bridge reports the version of its data files; the connector checks it
+  -- against the version compiled into the Haskell library.
+  metadata <- getDataFileName "connector.cabal"
+  let mainArgs = ["-m", "connector.main", metadata] ++ args
   case runtime of
     JavaClasspath java classpath -> pure (proc java (["-cp", source ++ [searchPathSeparator] ++ classpath, "clojure.main"] ++ mainArgs))
     ClojureCLI clojure -> do

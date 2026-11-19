@@ -74,9 +74,9 @@
     (cond-> {:snapshot token :t (:t db)}
       historical? (assoc :as-of selector))))
 
-(defn dispatch [conn snapshots req]
+(defn dispatch [conn snapshots package-version req]
   (case (:op req)
-    :hello {:protocol 1 :version "0.1.0.0"}
+    :hello {:protocol 1 :version package-version}
     :snapshot/open (open-snapshot conn snapshots req)
     :snapshot/close (do (when-not (contains? @snapshots (:snapshot req))
                           (fail "Unknown or released snapshot"))
@@ -139,11 +139,13 @@
             (emit {:ok true :result {:db-name db-name :t (:t (d/db conn))
                                     :initial-transactions (count transactions)}})))))))
 
-(defn -main [mode storage-dir system db-name & paths]
+(defn -main [metadata mode storage-dir system db-name & paths]
   (when-not (and (#{"provision" "serve"} mode) storage-dir system db-name
                  (or (= mode "provision") (empty? paths)))
     (throw (ex-info "Usage: provision STORAGE-DIR SYSTEM DB-NAME [INITIAL-TX.edn ...] | serve STORAGE-DIR SYSTEM DB-NAME" {})))
-  (let [client (d/client {:server-type :datomic-local :system system
+  (let [package-version (or (second (re-find #"(?m)^version:[ \t]*([0-9]+(?:\.[0-9]+)*)" (slurp metadata)))
+                            (fail "Missing version in connector.cabal"))
+        client (d/client {:server-type :datomic-local :system system
                          :storage-dir (.getCanonicalPath (io/file storage-dir))})]
     (try
       (case mode
@@ -151,7 +153,7 @@
         "serve" (let [conn (d/connect client {:db-name db-name})
                       snapshots (atom {})]
                   (doseq [line (line-seq (java.io.BufferedReader. *in*))]
-                    (emit (try {:ok true :result (dispatch conn snapshots (read-edn line))}
+                    (emit (try {:ok true :result (dispatch conn snapshots package-version (read-edn line))}
                                (catch Exception e (error-response e)))))))
       (finally
         (local/release-db {:system system :db-name db-name})

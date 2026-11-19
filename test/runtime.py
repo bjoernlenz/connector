@@ -1,11 +1,13 @@
 """Check a relocated, offline runtime from an unrelated working directory."""
 import hashlib
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
 
 root = Path(__file__).resolve().parent.parent
+version = re.search(r"^version:\s*(\S+)", (root / "connector.cabal").read_text(), re.M).group(1)
 with tempfile.TemporaryDirectory(prefix="connector-runtime-") as temporary:
     work = Path(temporary)
     built = work / "built"
@@ -22,5 +24,6 @@ with tempfile.TemporaryDirectory(prefix="connector-runtime-") as temporary:
         text=True, capture_output=True, check=True, cwd=work, timeout=60)
     lines = result.stdout.splitlines()
     assert len(lines) == 2 and all(line.startswith("{:ok true,") for line in lines), result
-    assert ':protocol 1' in lines[0] and ':version "0.1.0.0"' in lines[0], lines[0]
+    assert (relocated / "VERSION").read_text().strip() == version
+    assert ':protocol 1' in lines[0] and f':version "{version}"' in lines[0], lines[0]
 print("PASS: runtime relocates with matching checksums and serves without Clojure CLI")

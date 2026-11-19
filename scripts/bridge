@@ -10,11 +10,11 @@ mkdir -p "$CLJ_CONFIG"
 if [ -f "$ROOT/.cache/bridge-classpath" ]; then
   JAVA=java
   if [ -n "${JAVA_HOME:-}" ]; then JAVA="$JAVA_HOME/bin/java"; fi
-  exec "$JAVA" -cp "$(cat "$ROOT/.cache/bridge-classpath")" clojure.main -m connector.main "$@"
+  exec "$JAVA" -cp "$(cat "$ROOT/.cache/bridge-classpath")" clojure.main -m connector.main "$ROOT/connector.cabal" "$@"
 fi
 if [ -x "$ROOT/.tools/clojure/clojure" ]; then
   CLOJURE="$ROOT/.tools/clojure/clojure"
 else
   CLOJURE=clojure
 fi
-exec "$CLOJURE" -M -m connector.main "$@"
+exec "$CLOJURE" -M -m connector.main "$ROOT/connector.cabal" "$@"

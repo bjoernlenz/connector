@@ -11,6 +11,8 @@ import Datomic.Runtime (BridgeRuntime(..))
 import Data.List (isSuffixOf)
 import Data.Time (UTCTime(..), defaultTimeLocale, parseTimeM, addUTCTime, fromGregorian)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
+import Data.Version (showVersion)
+import Paths_connector (version)
 import System.Environment (getArgs, getExecutablePath)
 import System.IO (hClose, hFlush, isEOF, openTempFile, stdout)
 import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, removeFile, removeDirectoryRecursive)
@@ -44,8 +46,8 @@ main = do
 
 mock :: String -> IO ()
 mock mode = case mode of
-  "ready" -> getLine >> putStrLn "{:ok true :result {:protocol 1 :version \"0.1.0.0\"}}" >> hFlush stdout
-  "mismatch" -> getLine >> putStrLn "{:ok true :result {:protocol 999 :version \"0.0.0\"}}" >> hFlush stdout
+  "ready" -> getLine >> putStrLn ("{:ok true :result {:protocol 1 :version " ++ show (showVersion version) ++ "}}") >> hFlush stdout
+  "mismatch" -> getLine >> putStrLn "{:ok true :result {:protocol 1 :version \"mismatched\"}}" >> hFlush stdout
   "slow" -> do
     _ <- getLine
     threadDelay 500000

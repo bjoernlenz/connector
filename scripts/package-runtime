@@ -46,6 +46,7 @@ for name, jar in jars.items():
     shutil.copy2(jar, destination / "lib" / name)
 shutil.copytree(root / "bridge/src", destination / "bridge/src")
 shutil.copy2(root / "deps.edn", destination / "deps.edn")
+shutil.copy2(root / "connector.cabal", destination / "connector.cabal")
 (destination / "VERSION").write_text(version + "\n")
 (destination / "run").write_text('''#!/bin/sh
 set -eu
@@ -54,7 +55,7 @@ JAVA=${DATOMIC_CONNECTOR_JAVA:-java}
 if [ -z "${DATOMIC_CONNECTOR_JAVA:-}" ] && [ -n "${JAVA_HOME:-}" ]; then
   JAVA="$JAVA_HOME/bin/java"
 fi
-exec "$JAVA" -cp "$ROOT/bridge/src:$ROOT/lib/*" clojure.main -m connector.main "$@"
+exec "$JAVA" -cp "$ROOT/bridge/src:$ROOT/lib/*" clojure.main -m connector.main "$ROOT/connector.cabal" "$@"
 ''')
 (destination / "run").chmod(0o755)
 files = sorted(path for path in destination.rglob("*") if path.is_file())

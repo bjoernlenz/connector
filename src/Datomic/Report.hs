@@ -3,6 +3,7 @@ module Datomic.Report
   (EntityId(..), Basis(..), TempId(..), Datom(..), TransactionReport(..), decodeTransactionReport) where
 
 import Control.Monad (unless)
+import qualified Data.Set as Set
 import Datomic.EDN
 
 newtype EntityId = EntityId Integer deriving (Eq, Ord, Show)
@@ -32,7 +33,7 @@ decodeTransactionReport value = do
   ids <- required "tempids" >>= \v -> case v of
     Map xs -> mapM tempid xs
     _ -> Left "tempids must be a map"
-  unless (length (map fst ids) == length (unique (map fst ids))) (Left "Duplicate tempid")
+  unless (length ids == Set.size (Set.fromList (map fst ids))) (Left "Duplicate tempid")
   ds <- required "tx-data" >>= \v -> case v of
     Vector xs -> mapM datom xs
     _ -> Left "tx-data must be a vector"
@@ -61,5 +62,3 @@ decodeTransactionReport value = do
     scalar (Tagged _ _) = False
     scalar (Vector xs) = all (\x -> x == Nil || scalar x) xs -- Partial composite tuple
     scalar _ = True
-    unique [] = []
-    unique (x:xs) = x : unique (filter (/= x) xs)

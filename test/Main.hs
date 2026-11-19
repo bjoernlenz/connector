@@ -462,6 +462,11 @@ reportTests = do
   let decode = decodeTransactionReport . either error id . parseEDN
       good = "{:t 1 :tx 100 :tempids {\"x\" 200} :tx-data [[0 10 #connector/float \"0.1\" 100 true]]}"
   check (case decode good of Right r -> transactionBasis r == Basis 1 && map datomValue (transactionDatoms r) == [Tagged "connector/float" (StringEDN "0.1")]; _ -> False) "Report scalar lost"
+  let withTempids ids = decode ("{:t 1 :tx 100 :tempids " ++ ids ++ " :tx-data [[2 3 4 100 true]]}")
+  check (fmap transactionTempids (withTempids "{\"-1\" 200 -1 201}") ==
+    Right [(StringTempId "-1", EntityId 200), (IntTempId (-1), EntityId 201)]) "Tempid order or type changed"
+  mapM_ (\ids -> check (withTempids ids == Left "Duplicate tempid") "Accepted duplicate tempid")
+    ["{\"x\" 200 \"x\" 201}", "{-1 200 -1 201}"]
   check (case decode "{:t 1 :tx 100 :tempids {} :tx-data [[2 3 [\"one\" nil] 100 true]]}" of Right _ -> True; _ -> False) "Partial tuple rejected"
   mapM_ (\text -> check (case decode text of Left _ -> True; _ -> False) "Accepted malformed report")
     ["{:t 1 :tx 100 :tempids {} :tx-data [[2 3 nil 100 true]]}",

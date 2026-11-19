@@ -53,7 +53,8 @@ mock mode = case mode of
     hFlush stdout
     forever (getLine >> putStrLn "{:ok true :result :next}" >> hFlush stdout)
   "bad-report" -> getLine >> putStrLn "{:ok true :result {:t 1}}" >> hFlush stdout
-  "snapshots" -> snapshotMock 0
+  "snapshots" -> snapshotMock False 0
+  "release-fails" -> snapshotMock True 0
   "bad-snapshot" -> getLine >> putStrLn "{:ok true :result {:snapshot \"token\" :t 10 :as-of {:t 9}}}" >> hFlush stdout
   "malformed" -> getLine >> putStrLn "garbage" >> hFlush stdout
   "bad-error" -> getLine >> putStrLn "{:ok false :error nil}" >> hFlush stdout
@@ -74,8 +75,8 @@ mock mode = case mode of
   _ -> pure ()
 
 -- Count retained handles so callback failure tests verify actual release requests.
-snapshotMock :: Integer -> IO ()
-snapshotMock retained = do
+snapshotMock :: Bool -> Integer -> IO ()
+snapshotMock rejectRelease retained = do
   done <- isEOF
   unless done $ do
     req <- getLine >>= either fail pure . parseEDN
@@ -85,9 +86,11 @@ snapshotMock retained = do
               ++ maybe [] (\p -> [(Keyword "as-of", p)]) (field "as-of" req)))
           Just (Keyword "snapshot/close") -> (retained - 1, Nil)
           _ -> (retained, IntEDN retained)
-    putStrLn (renderEDN (Map [(Keyword "ok", Boolean True), (Keyword "result", result)]))
+    if rejectRelease && field "op" req == Just (Keyword "snapshot/close")
+      then putStrLn "{:ok false :error {:class \"test.Release\" :message \"release rejected\" :data {}}}"
+      else putStrLn (renderEDN (Map [(Keyword "ok", Boolean True), (Keyword "result", result)]))
     hFlush stdout
-    snapshotMock next
+    snapshotMock rejectRelease next
 
 echoResponse :: String -> IO ()
 echoResponse line = do
@@ -281,7 +284,8 @@ scalarTests bridge storage system database = withConnector bridge ["serve", stor
   report <- transactReport c context (Vector [Map ((Keyword "db/id", StringEDN "sample") : [(attr kind, value) | (kind,value) <- values])])
   let eid = case lookup (StringTempId "sample") (transactionTempids report) of Just (EntityId n) -> IntEDN n; _ -> Nil
   check (transactionBasis report > Basis 0 && not (null (transactionDatoms report))) "Missing typed report basis/datoms"
-  check (lookup "string" values `elem` map (Just . datomValue) (transactionDatoms report)) "Control characters lost in transaction report"
+  check (any (\d -> Just (datomValue d) == lookup "string" values) (transactionDatoms report))
+    "Control characters lost in transaction report"
   let EntityId txid = transactionEntity report
   metadata <- pull c (literal "[{:write/actor [:db/id]} {:write/via [:db/id]} :db/txInstant]") (IntEDN txid)
   check ((field "write/actor" metadata >>= field "db/id") == field "db/id" a) "Report metadata actor mismatch"
@@ -330,6 +334,17 @@ compositeTupleTests c context = do
 
 snapshotTests :: FilePath -> IO ()
 snapshotTests exe = do
+  withConnector exe ["--mock", "release-fails"] $ \c -> do
+    escaped <- newEmptyMVar
+    result <- try (withSnapshot c (putMVar escaped))
+    check (case result of Left (DatomicRejected _) -> True; _ -> False) "Release rejection not propagated"
+    s <- takeMVar escaped
+    let locallyRefused action = do
+          failure <- try action
+          check (case failure of Left (LocalValidation "Snapshot scope has ended") -> True; _ -> False) "Escaped snapshot did not fail locally after release rejection"
+    locallyRefused (querySnapshot s Nil [])
+    locallyRefused (pullSnapshot s Nil Nil)
+    query c Nil [] >>= \n -> check (n == IntEDN 0) "Release rejection closed connector"
   withConnector exe ["--mock", "snapshots"] $ \c -> do
     mapM_ (\point -> do
       result <- try (withSnapshotAsOf c point (const (pure ())))

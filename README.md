@@ -1,5 +1,7 @@
 # Haskell ↔ Datomic Local connector
 
+New project? Follow [How to integrate the connector](docs/how-to-start-a-new-project.md).
+
 A small Haskell library starts a Clojure/JVM subprocess, exchanges newline-delimited
 EDN over stdin/stdout, and uses the synchronous Datomic Client API. Datomic Local
 stores the database on disk. No server, Scotty dependency or application schema

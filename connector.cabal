@@ -15,6 +15,7 @@ tested-with: GHC ==9.6.7
 
 extra-source-files:
   README.md
+  docs/how-to-start-a-new-project.md
   deps.edn
   bridge/src/connector/main.clj
   bridge/src/connector/attribution.edn

@@ -1,7 +1,7 @@
 module Main where
 
-import Control.Concurrent (threadDelay)
-import Control.Exception (try, throwIO)
+import Control.Concurrent (ThreadId, MVar, forkFinally, killThread, newEmptyMVar, putMVar, takeMVar, threadDelay)
+import Control.Exception (SomeException, AsyncException(ThreadKilled), bracket, fromException, try, throwIO)
 import System.Exit (exitFailure)
 import Control.Monad (unless, forever)
 import Datomic.Connector
@@ -10,8 +10,10 @@ import Datomic.Report (decodeTransactionReport)
 import Datomic.Runtime (BridgeRuntime(..))
 import Data.List (isSuffixOf)
 import System.Environment (getArgs, getExecutablePath)
-import System.IO (hFlush, stdout)
+import System.IO (hClose, hFlush, isEOF, openTempFile, stdout)
+import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, removeFile, removeDirectoryRecursive)
 import System.Timeout (timeout)
+import GHC.Conc (ThreadStatus(ThreadBlocked), BlockReason(BlockedOnMVar), threadStatus)
 
 check :: Bool -> String -> IO ()
 check ok message = unless ok (ioError (userError message))
@@ -29,6 +31,12 @@ main = do
     ("-cp":classpath:_) | "mock-mismatch" `isSuffixOf` classpath -> mock "mismatch"
     ("-cp":classpath:_) | "mock-slow" `isSuffixOf` classpath -> mock "slow"
     ["--mock", mode] -> mock mode
+    ["--mock-gated", ready, release] -> do
+      line <- getLine
+      writeFile ready "ready"
+      waitUntil (doesFileExist release)
+      echoResponse line
+      echoLoop
     ["--scalars", bridge, storage, system, database] -> scalarTests bridge storage system database
     _ -> tests
 
@@ -57,16 +65,115 @@ mock mode = case mode of
     hFlush stdout
   "echo" -> do
     line <- getLine
-    request <- either (ioError . userError) pure (parseEDN line)
-    putStrLn (renderEDN (Map [(Keyword "ok", Boolean True), (Keyword "result", maybe Nil id (field "query" request))]))
-    hFlush stdout
+    echoResponse line
+  "echo-many" -> echoLoop
   _ -> pure ()
+
+echoResponse :: String -> IO ()
+echoResponse line = do
+  request <- either (ioError . userError) pure (parseEDN line)
+  putStrLn (renderEDN (Map [(Keyword "ok", Boolean True), (Keyword "result", maybe Nil id (field "query" request))]))
+  hFlush stdout
+
+echoLoop :: IO ()
+echoLoop = do
+  done <- isEOF
+  unless done (getLine >>= echoResponse >> echoLoop)
+
+waitUntil :: IO Bool -> IO ()
+waitUntil condition = do
+  ready <- condition
+  unless ready (threadDelay 1000 >> waitUntil condition)
+
+within :: IO a -> IO a
+within action = timeout 10000000 action >>= maybe (fail "Concurrency test timed out") pure
+
+type Worker a = (ThreadId, MVar (Either SomeException a))
+
+withWorker :: IO a -> (Worker a -> IO b) -> IO b
+withWorker action = bracket start (killThread . fst)
+  where
+    start = do
+      result <- newEmptyMVar
+      tid <- forkFinally action (putMVar result)
+      pure (tid, result)
+
+awaitWorker :: Worker a -> IO a
+awaitWorker (_, result) = within (takeMVar result) >>= either throwIO pure
+
+awaitCancelled :: Worker a -> IO ()
+awaitCancelled (_, result) = do
+  outcome <- within (takeMVar result)
+  check (case outcome of Left e -> fromException e == Just ThreadKilled; _ -> False)
+    "Worker should retain asynchronous cancellation"
+
+-- Observe actual lock contention rather than relying on scheduling delays.
+awaitWaiting :: Worker a -> IO ()
+awaitWaiting (tid, _) = within $ waitUntil $ do
+  status <- threadStatus tid
+  pure (status == ThreadBlocked BlockedOnMVar)
+
+withGatedConnector :: FilePath -> (Connector -> FilePath -> FilePath -> IO a) -> IO a
+withGatedConnector exe action = bracket temporary removeDirectoryRecursive $ \dir ->
+  let ready = dir ++ "/ready"
+      release = dir ++ "/release"
+  in withConnector exe ["--mock-gated", ready, release] $ \c -> action c ready release
+  where
+    temporary = do
+      dir <- getTemporaryDirectory
+      (path, handle) <- openTempFile dir "connector-concurrency"
+      hClose handle
+      removeFile path
+      createDirectory path
+      pure path
+
+concurrencyTests :: FilePath -> IO ()
+concurrencyTests exe = do
+  withConnector exe ["--mock", "echo-many"] $ \c -> do
+    gate <- newEmptyMVar
+    let start = mapM_ (const (putMVar gate ())) [1..32 :: Int]
+    -- Keep every worker in scope until all requests have completed.
+    let launch [] = start
+        launch (n:ns) = withWorker (takeMVar gate >> query c (IntEDN n) []) $ \worker -> do
+          launch ns
+          value <- awaitWorker worker
+          check (value == IntEDN n) "Concurrent caller received another caller's response"
+    within (launch [1..32])
+  withGatedConnector exe $ \c ready release ->
+    withWorker (query c (Keyword "active") []) $ \active -> do
+      within (waitUntil (doesFileExist ready))
+      withWorker (query c (Keyword "cancelled-waiter") []) $ \waiting -> do
+        awaitWaiting waiting
+        killThread (fst waiting)
+        awaitCancelled waiting
+      writeFile release "release"
+      value <- awaitWorker active
+      check (value == Keyword "active") "Waiting cancellation affected the active request"
+      next <- query c (Keyword "next") []
+      check (next == Keyword "next") "Waiting cancellation closed the connector"
+  withGatedConnector exe $ \c ready _ ->
+    withWorker (transact c (WriteContext (EntityId 1) (EntityId 2)) (Vector [])) $ \active -> do
+      within (waitUntil (doesFileExist ready))
+      let waitingCall = try (query c (Keyword "waiting") []) :: IO (Either ConnectorError EDN)
+          closed result = check (case result of Left ConnectorClosed -> True; _ -> False)
+            "Waiting caller should fail with ConnectorClosed"
+      withWorker waitingCall $ \first -> withWorker waitingCall $ \second -> do
+        awaitWaiting first
+        awaitWaiting second
+        killThread (fst active)
+        awaitCancelled active
+        awaitWorker first >>= closed
+        awaitWorker second >>= closed
+        result <- try (query c (Keyword "later") [])
+        closed result
+  putStrLn "PASS: shared connector routes concurrent replies and handles waiting/active cancellation"
 
 tests :: IO ()
 tests = do
   ednTests
   reportTests
   exe <- getExecutablePath
+  concurrencyTests exe
   let config mode = (defaultLocalConfig "." "test" "test") {bridgeRuntime = JavaClasspath exe mode}
   entered <- withLocalConnector (config "mock-ready") (const (pure True))
   check entered "Compatible bridge should enter caller scope"

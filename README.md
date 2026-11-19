@@ -182,6 +182,27 @@ The `experiment/` files are optional example inputs, absent from the bridge runt
 [transaction entity metadata](https://docs.datomic.com/reference/best.html),
 [Clojure installation](https://clojure.org/guides/install_clojure).
 
+## Sharing a connector within an application
+
+Open one `withLocalConnector` scope at application startup and share its
+`Connector` between Haskell threads. Each connector owns a bridge JVM; opening
+another connector does not join the existing owner. Finish all child threads
+before leaving the connector scope.
+
+Individual calls are serialized across the complete request/response exchange.
+Concurrent callers receive their own responses, but should not depend on which
+caller acquires the connector first. A sequence of calls is not atomic: when a
+write depends on previously read state, use a conditional transaction such as
+`:db/cas` to detect conflicts. Use `withSnapshot` for several reads at one basis;
+it does not reserve the database against writes.
+
+Cancelling a thread waiting for the connector leaves the active request and
+connector usable. Cancelling an active exchange closes the connector; waiting
+and subsequent callers fail with `ConnectorClosed`. Cancellation during a write
+may leave a committed transaction even though the caller received no success
+response. Reconnect and reconcile before retrying; the connector does not retry
+automatically.
+
 ## Typed failures (caller compatibility)
 
 Catch `ConnectorError` (also exported from `Datomic.Connector`): `LocalValidation`
